@@ -37,6 +37,8 @@ pub struct PolicyDoc {
     #[serde(default)]
     pub trifecta: TrifectaDoc,
     #[serde(default)]
+    pub response: ResponseDoc,
+    #[serde(default)]
     pub defaults: DefaultsDoc,
     #[serde(default)]
     pub pseudonyms: PseudonymsDoc,
@@ -114,6 +116,24 @@ pub struct TermDoc {
     pub form: String,
     #[serde(rename = "type")]
     pub ty: String,
+}
+
+/// Checks of the model's answer (RSP-06, RSP-10): `off`, `warn` or `deny`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseDoc {
+    /// A secret the model wrote itself in the arguments of a tool call (default `deny`).
+    #[serde(default)]
+    pub tool_secrets: Option<String>,
+    /// The same in the content of a file the call writes (default `warn`).
+    #[serde(default)]
+    pub file_secrets: Option<String>,
+    /// Dangerous commands in shell calls (default `warn`).
+    #[serde(default)]
+    pub dangerous_commands: Option<String>,
+    /// More patterns for dangerous commands, regular expressions.
+    #[serde(default)]
+    pub dangerous_patterns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +275,7 @@ pub struct Compiled {
     pub ingress: IngressPolicy,
     pub trifecta: TrifectaConfig,
     pub pseudo: PseudoConfig,
+    pub response: crate::danger::ResponsePolicy,
 }
 
 fn class_of(s: &str) -> Option<Class> {
@@ -556,6 +577,35 @@ impl PolicyDoc {
         if !self.pseudonyms.envs.is_empty() {
             pseudo.envs = self.pseudonyms.envs.clone();
         }
+        let mut response = crate::danger::ResponsePolicy::default();
+        let act = |name: &str, v: &Option<String>, d: crate::danger::Act| match v {
+            None => Ok(d),
+            Some(s) => crate::danger::Act::parse(s)
+                .ok_or_else(|| format!("response.{name}: «{s}», нужно off, warn или deny")),
+        };
+        response.tool_secrets = act(
+            "tool_secrets",
+            &self.response.tool_secrets,
+            response.tool_secrets,
+        )?;
+        response.file_secrets = act(
+            "file_secrets",
+            &self.response.file_secrets,
+            response.file_secrets,
+        )?;
+        response.dangerous = act(
+            "dangerous_commands",
+            &self.response.dangerous_commands,
+            response.dangerous,
+        )?;
+        for p in &self.response.dangerous_patterns {
+            response.extra.push(
+                regex::RegexBuilder::new(p)
+                    .size_limit(1 << 20)
+                    .build()
+                    .map_err(|e| format!("response.dangerous_patterns: «{p}»: {e}"))?,
+            );
+        }
         Ok(Compiled {
             tenant: self.tenant.clone(),
             detect,
@@ -565,6 +615,7 @@ impl PolicyDoc {
             ingress,
             trifecta,
             pseudo,
+            response,
         })
     }
 
@@ -832,6 +883,28 @@ rules:
             .any(|r| r.id == "R-010" && r.route.as_deref() == Some("local-vllm")));
     }
 
+    // REQ: RSP-10, RSP-06 — the policy sets the action for the model's own secrets and commands.
+    #[test]
+    fn response_section_compiles_with_defaults() {
+        use crate::danger::Act;
+        let d = PolicyDoc::from_yaml("version: 1")
+            .unwrap()
+            .compile()
+            .unwrap()
+            .response;
+        assert_eq!(
+            (d.tool_secrets, d.file_secrets, d.dangerous),
+            (Act::Deny, Act::Warn, Act::Warn)
+        );
+        let y = "version: 1\nresponse:\n  tool_secrets: warn\n  file_secrets: deny\n  dangerous_commands: deny\n  dangerous_patterns: ['terraform\\s+destroy']\n";
+        let r = PolicyDoc::from_yaml(y).unwrap().compile().unwrap().response;
+        assert_eq!(
+            (r.tool_secrets, r.file_secrets, r.dangerous),
+            (Act::Warn, Act::Deny, Act::Deny)
+        );
+        assert_eq!(r.extra.len(), 1);
+    }
+
     // REQ: POL-01 — strict schema: unknown fields and bad values are errors, never ignored.
     #[test]
     fn schema_is_strict() {
@@ -846,6 +919,8 @@ rules:
             ("version: 1\ndefaults: { attachments: allow }", "unsupported value"),
             ("version: 1\ndefaults: { secret_attributes: [value] }", "attribute"),
             ("version: 1\ntrifecta: { mode: maybe }", "mode"),
+            ("version: 1\nresponse: { tool_secrets: sometimes }", "tool_secrets"),
+            ("version: 1\nresponse: { dangerous_patterns: ['('] }", "dangerous_patterns"),
             ("version: 1\nrules:\n  - id: x\n    when: { sink: [moon] }\n    restore: { SECRET: deny }", "sink"),
         ] {
             let r = PolicyDoc::from_yaml(bad).and_then(|d| d.compile().map(|_| ()));

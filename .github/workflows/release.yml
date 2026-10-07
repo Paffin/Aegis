@@ -1,0 +1,53 @@
+name: release
+# NFR-10, SEC-09: a tag builds the image for amd64 and arm64, signs it without a key (cosign, OIDC
+# of the workflow), attaches the SBOM, and publishes the binaries with checksums.
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.meta.outputs.image }}:latest
+          sbom: true
+          provenance: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image
+        run: cosign sign --yes "${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}"
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p aegis-gateway -p aegis-cli
+      - name: Package
+        run: |
+          mkdir dist
+          cp target/release/aegis-gateway target/release/aegis dist/
+          cp deploy/systemd/aegis-gateway.service dist/
+          (cd dist && sha256sum * > SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

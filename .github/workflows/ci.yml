@@ -30,6 +30,24 @@ jobs:
         run: scripts/demo.sh
       - name: Load test (NFR-03, NFR-04)
         run: cargo run -q --release -p aegis-bench -- load --dir "$HOME/.cargo/registry/src" --seconds 10 --stream-secs 8 --max-ttfb-overhead-p95-ms 100 --min-streams 200
+  supply-chain:
+    # SEC-09: licenses, bans, advisories and sources; a CycloneDX SBOM of the workspace
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
   image:
     runs-on: ubuntu-latest
     steps:

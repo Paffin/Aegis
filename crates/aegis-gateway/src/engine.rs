@@ -30,6 +30,8 @@ pub struct Engine {
     pub restore_policy: RestorePolicy,
     pub trifecta: TrifectaConfig,
     pub ingress: IngressPolicy,
+    /// RSP-06, RSP-10: checks of the model's answer.
+    pub response: aegis_core::danger::ResponsePolicy,
     cache: Mutex<DetectCache>,
     /// DET-09: the longest a block may be scanned.
     pub detect_budget: Duration,
@@ -73,6 +75,7 @@ impl Engine {
             restore_policy: RestorePolicy::default(),
             trifecta: TrifectaConfig::default(),
             ingress: IngressPolicy::default(),
+            response: Default::default(),
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }
@@ -110,6 +113,7 @@ impl Engine {
             restore_policy: c.restore,
             trifecta: c.trifecta,
             ingress: c.ingress,
+            response: c.response,
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }

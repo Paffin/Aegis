@@ -596,6 +596,15 @@ fn complete(
             );
         }
     }
+    for r in &ctx.stats.sinks {
+        if r.decision == "warn" {
+            m.inc(
+                "aegis_warned_total",
+                &[("rule", &r.rule), ("sink", r.sink)],
+                1,
+            );
+        }
+    }
     for (stage, ms) in &ctx.stats.timings_ms {
         m.observe_ms("aegis_stage_ms", &[("stage", stage)], *ms);
     }

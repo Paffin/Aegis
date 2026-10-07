@@ -24,6 +24,8 @@ fn reason_text(reason: &str) -> &'static str {
         "collision" => "псевдоним неоднозначен",
         "trifecta" => "в контексте одновременно приватные данные и недоверенный контент",
         "malformed" => "аргументы вызова не удалось разобрать",
+        "dangerous" => "опасная команда",
+        "response_secret" => "в аргументах вызова секрет, которого модели не передавали",
         _ => "запрещено политикой",
     }
 }
@@ -209,7 +211,22 @@ pub fn restore_tool_call(
         Sink::from_tool(name).unwrap_or(Sink::Unknown)
     };
 
-    let denied: std::cell::RefCell<Option<Denied>> = std::cell::RefCell::new(None);
+    // RSP-10, RSP-06: the model's own arguments, before anything is restored.
+    let mut warned: Vec<(String, Sink)> = vec![];
+    let cmd_parts: Option<&[String]> = match &cmd {
+        Some((_, Command::Argv(p) | Command::List(p))) => Some(p),
+        _ => None,
+    };
+    let early = inspect_call(
+        engine,
+        ctx,
+        input,
+        cmd_text.as_deref(),
+        cmd_parts,
+        default_sink,
+        &mut warned,
+    );
+    let denied: std::cell::RefCell<Option<Denied>> = std::cell::RefCell::new(early);
     let check = |sink: Sink, text: &str, precleared: bool, ctx: &RequestCtx| -> String {
         let c = SinkContext {
             sink,
@@ -306,6 +323,15 @@ pub fn restore_tool_call(
             Err(d)
         }
         None => {
+            for (rule, sink) in warned {
+                ctx.stats.sinks.push(SinkAudit {
+                    tool: name.to_string(),
+                    sink: sink.as_str(),
+                    decision: "warn",
+                    rule,
+                    classes: vec![],
+                });
+            }
             ctx.stats.sinks.push(SinkAudit {
                 tool: name.to_string(),
                 sink: default_sink.as_str(),
@@ -316,6 +342,87 @@ pub fn restore_tool_call(
             Ok(())
         }
     }
+}
+
+fn collect_strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+    match v {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| collect_strings(x, out)),
+        Value::Object(o) => o.values().for_each(|x| collect_strings(x, out)),
+        _ => {}
+    }
+}
+
+/// RSP-10 and RSP-06: what the model itself wrote into a call. A dangerous command, or a secret
+/// of ours (a value the detectors know) in the arguments that is not one of our pseudonyms:
+/// the model reproduced it from training data or from somewhere Aegis did not mask. Returns the
+/// refusal when the policy says `deny`; `warn` is collected for the audit event.
+fn inspect_call(
+    engine: &Engine,
+    ctx: &RequestCtx,
+    input: &Value,
+    cmd_text: Option<&str>,
+    cmd_parts: Option<&[String]>,
+    sink: Sink,
+    warned: &mut Vec<(String, Sink)>,
+) -> Option<Denied> {
+    use aegis_core::danger::{dangerous, Act};
+    use aegis_core::policy::Ingress;
+    let resp = &engine.response;
+    let deny = |rule: &str, reason: &str, classes: Vec<&'static str>| Denied {
+        rule: rule.to_string(),
+        sink,
+        reason: reason.to_string(),
+        classes,
+    };
+    // (`cmd_text` is only there for shell tools)
+    if cmd_text.is_some() && resp.dangerous != Act::Off {
+        // the whole command, and each element of an argv array or command list on its own
+        // (`bash -lc 'rm -rf /'` quotes the part that matters)
+        let parts: &[String] = match cmd_parts {
+            Some(p) => p,
+            None => &[],
+        };
+        let hit = cmd_text
+            .into_iter()
+            .chain(parts.iter().map(String::as_str))
+            .find_map(|c| dangerous(c, &resp.extra));
+        if let Some(id) = hit {
+            if resp.dangerous == Act::Deny {
+                return Some(deny(&id, "dangerous", vec![]));
+            }
+            warned.push((id, sink));
+        }
+    }
+    let (act, rule) = if sink == Sink::FileWrite {
+        (resp.file_secrets, "RSP-06")
+    } else {
+        (resp.tool_secrets, "RSP-10")
+    };
+    if act == Act::Off {
+        return None;
+    }
+    let mut strings = vec![];
+    collect_strings(input, &mut strings);
+    let mut seen: HashSet<&str> = HashSet::new();
+    for s in strings {
+        if s.len() < 8 || !seen.insert(s) {
+            continue;
+        }
+        let scanned = engine.scan(s);
+        let found = scanned.entities.iter().find(|e| {
+            e.ty.class() == aegis_core::types::Class::Secret
+                && !matches!(engine.ingress.decide(e, &ctx.route).0, Ingress::Allow)
+        });
+        if found.is_some() {
+            if act == Act::Deny {
+                return Some(deny(rule, "response_secret", vec!["SECRET"]));
+            }
+            warned.push((rule.to_string(), sink));
+            break;
+        }
+    }
+    None
 }
 
 /// Restore one `function.arguments` string; `Err` carries the replacement text.

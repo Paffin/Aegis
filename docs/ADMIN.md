@@ -85,6 +85,11 @@ dictionary:
   employees: [{ first: Иван, last: Петров }]
   terms: [{ form: InternalPaymentSystem, type: SYSTEM }]
 trifecta: { mode: enforce, allow_destinations: ["docs.python.org"] }
+response:
+  tool_secrets: deny          # секрет, который модель написала сама в аргументах вызова
+  file_secrets: warn          # то же в содержимом записываемого файла (код с зашитым ключом)
+  dangerous_commands: warn    # curl | sh, rm -rf /, authorized_keys, отключение песочницы
+  dangerous_patterns: ['terraform\s+destroy']
 defaults:
   ingress: { SECRET: mask, INFRA: mask, PII: mask, CORP: mask }
   secret_attributes: [kind, has]
@@ -92,6 +97,17 @@ rules:
   - { id: R-020, when: { type: SECRET, kind: pem }, ingress: block_request }
   - { id: R-112, when: { sink: [shell_network, network] }, restore: { SECRET: deny, INFRA: internal_only } }
 ```
+
+**Проверка того, что пишет модель (`response`).** Подстановка отвечает на вопрос, куда можно вернуть значение, которое Aegis замаскировал. Раздел `response` отвечает на другой: что модель пишет в вызовах сама. Значения `off`, `warn` (запись в аудит и метрику `aegis_warned_total{rule,sink}`, вызов проходит), `deny` (вызов заменяется объяснением).
+
+| Ключ | Что проверяется | По умолчанию |
+|---|---|---|
+| `tool_secrets` | В аргументах вызова секрет, который детекторы узнают и который не наш псевдоним: модель воспроизвела ключ из обучающих данных или из места, которое Aegis не маскировал (правило `RSP-10`) | `deny` |
+| `file_secrets` | То же в содержимом файла, который вызов записывает (правило `RSP-06`) | `warn` |
+| `dangerous_commands` | Шелл-вызовы: загрузка и запуск (`D-01`), стирание системы или дома (`D-02`), `authorized_keys` (`D-03`), отключение песочницы агента или системы (`D-04`), `chmod 777 /` (`D-05`), fork-бомба (`D-06`) | `warn` |
+| `dangerous_patterns` | Свои регулярные выражения для команд; номера `D-X1`, `D-X2`… | пусто |
+
+Список опасных команд короткий: он про то, что почти никогда не нужно в обычной работе, и не заменяет песочницу клиента.
 
 Порядок работы:
 
@@ -159,6 +175,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 | `scripts/smoke.sh` | Настоящие бинарники: бандл, ключи, горячая замена, повреждённый бандл, аудит без значений, SIGTERM во время потока |
 | `scripts/clients.sh` | Настоящие Claude Code, Codex, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (нужны Node.js и npm; Aider ставится через `uv`). Не установленный клиент пропускается |
 | `scripts/client-claude-files.sh` | Сценарий из концепции с настоящим Claude Code: секрет возвращается в файл, откуда он прочитан, и не попадает в другой файл |
+| `scripts/supply-chain.sh` | Лицензии, запреты, уязвимости и источники зависимостей (`deny.toml`); в CI то же плюс SBOM |
 | `scripts/trace.sh` | Какие требования спецификации покрыты тестами |
 | `aegis-bench load --dir <исходники>` | Добавка ко времени до первого байта, поток запросов, одновременные потоки |
 | `aegis-bench fp`, `recall`, `perf` | Ложные срабатывания, полнота, задержка преобразования |

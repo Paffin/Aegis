@@ -122,11 +122,14 @@ impl Engine {
     }
 }
 
+/// Entities of a block and whether it contains pseudonym-like text.
+type CachedScan = (Vec<Entity>, bool);
+
 /// Approximate LRU with a bounded number of entries; never persisted (DET-03).
 struct DetectCache {
     cap: usize,
     tick: u64,
-    map: HashMap<[u8; 32], ((Vec<Entity>, bool), u64)>,
+    map: HashMap<[u8; 32], (CachedScan, u64)>,
 }
 
 impl DetectCache {
@@ -137,7 +140,7 @@ impl DetectCache {
             map: HashMap::new(),
         }
     }
-    fn get(&mut self, k: &[u8; 32]) -> Option<(Vec<Entity>, bool)> {
+    fn get(&mut self, k: &[u8; 32]) -> Option<CachedScan> {
         self.tick += 1;
         let t = self.tick;
         self.map.get_mut(k).map(|(v, tick)| {
@@ -145,7 +148,7 @@ impl DetectCache {
             v.clone()
         })
     }
-    fn put(&mut self, k: [u8; 32], v: (Vec<Entity>, bool)) {
+    fn put(&mut self, k: [u8; 32], v: CachedScan) {
         self.tick += 1;
         if self.map.len() >= self.cap {
             let mut ticks: Vec<u64> = self.map.values().map(|(_, t)| *t).collect();

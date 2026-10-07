@@ -22,6 +22,7 @@
 - `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
 
+- `model_aliases`: псевдонимы моделей (`RTE-02`).
 - `aegis-gateway check <config>`: проверка конфигурации, ключей, провайдеров, бандла, аудита и портов до запуска; значений не печатает; код выхода 0/1.
 - Защита от перегрузки и зависшего провайдера: `max_concurrent_requests` (503 с `Retry-After` до чтения тела), `upstream_connect_timeout_secs`, `upstream_read_timeout_secs` (502).
 

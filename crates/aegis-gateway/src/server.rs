@@ -190,6 +190,8 @@ pub struct AppState {
     /// Requests in flight (a request holds its permit until its response body is over): beyond
     /// the limit a request is refused at once instead of piling up bodies in memory.
     pub limiter: Arc<tokio::sync::Semaphore>,
+    /// RTE-02: client-visible model name → the provider's name.
+    pub model_aliases: std::collections::BTreeMap<String, String>,
     pub audit: Audit,
     pub metrics: Arc<Metrics>,
     counter: AtomicU64,
@@ -223,6 +225,7 @@ impl AppState {
             bundle_required: false,
             http: client_with(Duration::from_secs(10), Duration::from_secs(300)),
             limiter: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
+            model_aliases: Default::default(),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
             counter: AtomicU64::new(0),
@@ -898,6 +901,34 @@ async fn passthrough_get(st: &AppState, headers: &HeaderMap, path: &str, query: 
     }
 }
 
+/// RTE-02: the top-level `model` of the (already transformed) body, renamed when it is an alias.
+fn rename_model(body: Vec<u8>, aliases: &std::collections::BTreeMap<String, String>) -> Vec<u8> {
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return body;
+    };
+    let Some(real) = v
+        .get("model")
+        .and_then(|m| m.as_str())
+        .and_then(|m| aliases.get(m))
+    else {
+        return body;
+    };
+    v["model"] = serde_json::Value::String(real.clone());
+    serde_json::to_vec(&v).unwrap_or(body)
+}
+
+/// RTE-02 for Gemini, where the model is part of the path (`/v1beta/models/<model>:action`).
+fn alias_gemini_path(
+    path: &str,
+    model: &str,
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> String {
+    match aliases.get(model) {
+        Some(real) => path.replacen(&format!("/{model}:"), &format!("/{real}:"), 1),
+        None => path.to_string(),
+    }
+}
+
 async fn proxy(
     st: Arc<AppState>,
     proto: Protocol,
@@ -1035,8 +1066,16 @@ async fn proxy(
     let summary = ctx.stats.summary();
     tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
 
+    let new_body = if st.model_aliases.is_empty() || gem.is_some() {
+        new_body
+    } else {
+        rename_model(new_body, &st.model_aliases)
+    };
     let url = match &gem {
-        Some(g) => up_cfg.url(&g.path, &forward_query(&g.query)),
+        Some(g) => up_cfg.url(
+            &alias_gemini_path(&g.path, &g.model, &st.model_aliases),
+            &forward_query(&g.query),
+        ),
         // The query goes through (Claude Code sends `?beta=true`), minus the client's `key=`.
         None => up_cfg.url(
             &match proto {

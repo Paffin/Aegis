@@ -64,6 +64,9 @@ pub struct ServerConfig {
     pub audit_required: bool,
     #[serde(default = "d_queue")]
     pub audit_queue: usize,
+    /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
+    #[serde(default)]
+    pub model_aliases: std::collections::BTreeMap<String, String>,
     /// Requests in flight; more are refused with 503 and `Retry-After`.
     #[serde(default = "d_max_in_flight")]
     pub max_concurrent_requests: usize,
@@ -361,6 +364,16 @@ impl ServerConfig {
         st.openai = openai;
         st.gemini = gemini;
         st.bundle_required = self.bundle.is_some();
+        if self
+            .model_aliases
+            .iter()
+            .any(|(a, m)| a.is_empty() || m.is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "model_aliases: names must not be empty".into(),
+            ));
+        }
+        st.model_aliases = self.model_aliases.clone();
         if self.max_concurrent_requests == 0 {
             return Err(ConfigError::Invalid(
                 "max_concurrent_requests must be at least 1".into(),

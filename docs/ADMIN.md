@@ -36,6 +36,7 @@ aegis-gateway /etc/aegis/gateway.json
 | `anthropic_base_url` (прежнее имя `upstream_base_url`), `anthropic_auth` | Провайдер Anthropic Messages и способ передачи ключа |
 | `openai_base_url`, `openai_api_prefix`, `openai_auth` | OpenAI-совместимый провайдер: Chat Completions, Responses, Completions, Embeddings |
 | `gemini_base_url` | Google Gemini API |
+| `model_aliases` | Псевдонимы моделей: `{"claude-default": "claude-sonnet-..."}`. Клиент просит стабильное имя, провайдеру уходит настоящее; смена модели не требует правки клиентов. Работает для всех протоколов, у Gemini имя заменяется в пути |
 | `max_concurrent_requests` | Запросов одновременно (по умолчанию 1000, потоки считаются на всё время потока). Лишний запрос получает 503 с `Retry-After: 1` до чтения тела |
 | `upstream_connect_timeout_secs`, `upstream_read_timeout_secs` | Ожидание соединения с провайдером (10) и молчания провайдера до ответа и между кусками потока (300). По истечении — 502 |
 | `tenant` | Идентификатор тенанта |

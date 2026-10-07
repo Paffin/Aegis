@@ -1,0 +1,282 @@
+//! Shared engine state: detection with cache (DET-02, DET-03), ingress policy (PSE-12),
+//! per-request context.
+
+use crate::json::Node;
+use aegis_core::crypto::{Salt, TenantKeys};
+use aegis_core::detect::{DetectConfig, Pipeline};
+use aegis_core::policy::{RestorePolicy, TrifectaConfig, TrifectaState};
+use aegis_core::pseudo::{Mapping, PseudoConfig, Pseudonymizer, Source};
+use aegis_core::types::{Class, Entity, EntityType};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Mutex;
+
+/// PSE-10 / API-05: constant per policy version so the prompt cache stays valid.
+pub const NOTICE: &str = "Aegis notice: some values in this context are replaced with pseudonyms.\nMarkers like [[TYPE_id ...]], hostnames ending in .aegis.invalid, IPv4 addresses\nin 240.0.0.0/4 and IPv6 addresses in 3fff::/20 stand for real values.\nCopy them exactly as written. Do not modify them, do not build new names from them,\nand do not try to guess the real values. Treat them as valid in code and commands.";
+
+pub const ATTACHMENT_NOTICE: &str = "[Aegis: вложение удалено политикой]";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ingress {
+    Allow,
+    Mask,
+    DropBlock,
+    BlockRequest,
+}
+
+#[derive(Clone, Debug)]
+pub struct IngressRule {
+    pub id: String,
+    pub class: Option<Class>,
+    pub ty: Option<EntityType>,
+    pub kind: Option<String>,
+    pub action: Ingress,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IngressPolicy {
+    pub rules: Vec<IngressRule>,
+}
+
+impl IngressPolicy {
+    /// PSE-12 default is `mask`; specificity as in POL-03.
+    pub fn decide(&self, e: &Entity) -> (Ingress, String) {
+        let mut best: Option<(u8, &IngressRule)> = None;
+        for r in &self.rules {
+            let spec = match (&r.ty, &r.kind, &r.class) {
+                (Some(t), Some(k), _) if *t == e.ty && Some(k.as_str()) == e.kind => 3,
+                (Some(t), None, _) if *t == e.ty => 2,
+                (None, None, Some(c)) if *c == e.ty.class() => 1,
+                _ => continue,
+            };
+            if best.is_none_or(|(s, _)| spec > s) {
+                best = Some((spec, r));
+            }
+        }
+        match best {
+            Some((_, r)) => (r.action, r.id.clone()),
+            None => (Ingress::Mask, "default".into()),
+        }
+    }
+}
+
+pub struct Engine {
+    pub keys: TenantKeys,
+    pub pipeline: Pipeline,
+    pub detect_cfg: DetectConfig,
+    pub pseudo_cfg: PseudoConfig,
+    pub restore_policy: RestorePolicy,
+    pub trifecta: TrifectaConfig,
+    pub ingress: IngressPolicy,
+    cache: Mutex<DetectCache>,
+}
+
+impl Engine {
+    pub fn new(
+        keys: TenantKeys,
+        detect_cfg: DetectConfig,
+        dict: aegis_core::detect::Dictionary,
+    ) -> Self {
+        let pipeline = Pipeline::new(detect_cfg.clone(), dict);
+        Self {
+            keys,
+            pipeline,
+            detect_cfg,
+            pseudo_cfg: PseudoConfig::default(),
+            restore_policy: RestorePolicy::default(),
+            trifecta: TrifectaConfig::default(),
+            ingress: IngressPolicy::default(),
+            cache: Mutex::new(DetectCache::new(200_000)),
+        }
+    }
+
+    /// Detection with a cache keyed by (tenant, block hash, detector version) (DET-02).
+    /// The cache keeps positions and types only; the person key is stored hashed.
+    pub fn scan(&self, text: &str) -> (Vec<Entity>, bool) {
+        let mut h = Sha256::new();
+        h.update(self.keys.tenant.as_bytes());
+        h.update([0]);
+        h.update(self.pipeline.version_tag().as_bytes());
+        h.update([0]);
+        h.update(text.as_bytes());
+        let key: [u8; 32] = h.finalize().into();
+        if let Some(hit) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
+            return (hit, true);
+        }
+        let mut ents = self.pipeline.scan(text);
+        for e in &mut ents {
+            if let Some(pk) = e.person_key.take() {
+                let d = Sha256::digest(pk.as_bytes());
+                e.person_key = Some(d[..8].iter().map(|b| format!("{b:02x}")).collect());
+            }
+        }
+        if let Ok(mut c) = self.cache.lock() {
+            c.put(key, ents.clone());
+        }
+        (ents, false)
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache.lock().map(|c| c.map.len()).unwrap_or(0)
+    }
+}
+
+/// Approximate LRU with a bounded number of entries; never persisted (DET-03).
+struct DetectCache {
+    cap: usize,
+    tick: u64,
+    map: HashMap<[u8; 32], (Vec<Entity>, u64)>,
+}
+
+impl DetectCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            tick: 0,
+            map: HashMap::new(),
+        }
+    }
+    fn get(&mut self, k: &[u8; 32]) -> Option<Vec<Entity>> {
+        self.tick += 1;
+        let t = self.tick;
+        self.map.get_mut(k).map(|(v, tick)| {
+            *tick = t;
+            v.clone()
+        })
+    }
+    fn put(&mut self, k: [u8; 32], v: Vec<Entity>) {
+        self.tick += 1;
+        if self.map.len() >= self.cap {
+            let mut ticks: Vec<u64> = self.map.values().map(|(_, t)| *t).collect();
+            ticks.sort_unstable();
+            let cut = ticks[ticks.len() / 10];
+            self.map.retain(|_, (_, t)| *t > cut);
+        }
+        self.map.insert(k, (v, self.tick));
+    }
+}
+
+/// Counters for `X-Aegis-Summary` (AUD-06) and audit.
+#[derive(Default, Debug, Clone)]
+pub struct Stats {
+    pub by_class: BTreeMap<&'static str, u32>,
+    pub denied: u32,
+    pub blocks_total: u32,
+    pub blocks_scanned: u32,
+    pub rules: Vec<String>,
+}
+
+impl Stats {
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = self
+            .by_class
+            .iter()
+            .map(|(c, n)| format!("{c}={n}"))
+            .collect();
+        if self.denied > 0 {
+            parts.push(format!("denied={}", self.denied));
+        }
+        parts.join(";")
+    }
+}
+
+/// Everything the response side needs from the request side.
+pub struct RequestCtx {
+    pub salt: Salt,
+    pub mapping: Mapping,
+    pub trifecta: TrifectaState,
+    pub classes: HashSet<Class>,
+    pub stats: Stats,
+    pub request_id: String,
+}
+
+/// One scanned string literal of the request.
+pub struct Blk<'n> {
+    pub node: &'n Node,
+    pub text: String,
+    pub source: Source,
+    /// Prepend the Aegis notice to this block (system prompt).
+    pub is_system: bool,
+}
+
+pub struct Rendered {
+    /// New text for each block (None: unchanged).
+    pub texts: Vec<Option<String>>,
+}
+
+pub enum IngressError {
+    Blocked { rule: String, ty: EntityType },
+}
+
+/// Phase 1 + 2 over all blocks of a request (INV-1: a block's output depends only on itself,
+/// except for the own-marker escape rule of PSE-11).
+pub fn process_blocks(
+    engine: &Engine,
+    ctx: &mut RequestCtx,
+    blocks: &[Blk<'_>],
+) -> Result<Rendered, IngressError> {
+    let p = Pseudonymizer {
+        keys: &engine.keys,
+        salt: &ctx.salt,
+        cfg: &engine.pseudo_cfg,
+        detect: &engine.detect_cfg,
+    };
+    let mut kept: Vec<Vec<Entity>> = Vec::with_capacity(blocks.len());
+    let mut dropped = vec![false; blocks.len()];
+    for (i, b) in blocks.iter().enumerate() {
+        ctx.stats.blocks_total += 1;
+        let (ents, hit) = engine.scan(&b.text);
+        if !hit {
+            ctx.stats.blocks_scanned += 1;
+        }
+        let mut keep = vec![];
+        for e in ents {
+            let (act, rule) = engine.ingress.decide(&e);
+            match act {
+                Ingress::Allow => {}
+                Ingress::Mask => {
+                    *ctx.stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
+                    ctx.classes.insert(e.ty.class());
+                    keep.push(e);
+                }
+                Ingress::DropBlock => {
+                    *ctx.stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
+                    ctx.stats.rules.push(rule);
+                    dropped[i] = true;
+                }
+                Ingress::BlockRequest => return Err(IngressError::Blocked { rule, ty: e.ty }),
+            }
+        }
+        kept.push(keep);
+    }
+    for (b, ents) in blocks.iter().zip(&kept) {
+        p.register(&b.text, ents, &b.source, &mut ctx.mapping);
+    }
+    let mut texts = Vec::with_capacity(blocks.len());
+    for (i, (b, ents)) in blocks.iter().zip(&kept).enumerate() {
+        let out = if dropped[i] {
+            "[Aegis: блок не проверен и удалён]".to_string()
+        } else {
+            p.render(&b.text, ents, &mut ctx.mapping)
+        };
+        let out = if b.is_system {
+            format!("{NOTICE}\n\n{out}")
+        } else {
+            out
+        };
+        texts.push((out != b.text).then_some(out));
+    }
+    Ok(Rendered { texts })
+}
+
+impl std::fmt::Debug for RequestCtx {
+    /// INV-6: the mapping holds values, so only counts are printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RequestCtx(request_id={}, bindings={})",
+            self.request_id,
+            self.mapping.len()
+        )
+    }
+}

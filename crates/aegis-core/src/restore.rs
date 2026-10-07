@@ -18,6 +18,10 @@ pub struct SinkContext<'a> {
     pub detect: &'a DetectConfig,
     pub trifecta_cfg: &'a TrifectaConfig,
     pub trifecta: TrifectaState,
+    /// The caller already decided the whole call (destinations, three-condition rule) on the
+    /// joined command, e.g. for `["bash","-lc","curl ..."]`; `internal_only` is then not re-checked
+    /// per element and the three-condition rule is not applied again.
+    pub precleared: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,7 +230,7 @@ pub fn restore(
         }
     };
 
-    if toks.iter().any(|t| t.action == Action::InternalOnly) {
+    if !ctx.precleared && toks.iter().any(|t| t.action == Action::InternalOnly) {
         let all_internal = complete && dests.iter().all(|d| is_internal(ctx.detect, d));
         if !all_internal {
             for (i, t) in toks.iter().enumerate() {
@@ -244,7 +248,7 @@ pub fn restore(
         }
     }
 
-    let trifecta_blocked = ctx.trifecta_cfg.blocks(ctx.trifecta, sink, &dests);
+    let trifecta_blocked = !ctx.precleared && ctx.trifecta_cfg.blocks(ctx.trifecta, sink, &dests);
 
     // Final text.
     let mut restored = 0u32;
@@ -384,6 +388,7 @@ mod tests {
             detect: &fx.det,
             trifecta_cfg: &fx.tri,
             trifecta: st,
+            precleared: false,
         }
     }
 

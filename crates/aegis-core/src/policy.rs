@@ -39,12 +39,24 @@ impl Sink {
     /// RST-04: sink by tool name for Claude Code and Codex. `Bash`/`shell` need
     /// the command analysed, so they return `None` here.
     pub fn from_tool(tool: &str) -> Option<Sink> {
+        if is_shell_tool(tool) {
+            return None;
+        }
         Some(match tool {
-            "Write" | "Edit" | "MultiEdit" | "NotebookEdit" | "apply_patch" => Sink::FileWrite,
-            "Read" | "Glob" | "Grep" | "NotebookRead" | "LS" => Sink::FileRead,
-            "WebFetch" | "WebSearch" => Sink::Network,
+            "Write"
+            | "Edit"
+            | "MultiEdit"
+            | "NotebookEdit"
+            | "apply_patch"
+            | "write_to_file"
+            | "replace_in_file"
+            | "edit_file"
+            | "str_replace_editor"
+            | "str_replace_based_edit_tool" => Sink::FileWrite,
+            "Read" | "Glob" | "Grep" | "NotebookRead" | "LS" | "read_file" | "list_files"
+            | "search_files" | "list_dir" | "grep_search" => Sink::FileRead,
+            "WebFetch" | "WebSearch" | "web_search" | "browser_action" => Sink::Network,
             "Task" => Sink::Agent,
-            "Bash" | "shell" | "local_shell" => return None,
             t if t.starts_with("mcp__") => Sink::Mcp,
             _ => Sink::Unknown,
         })
@@ -53,6 +65,21 @@ impl Sink {
     pub fn is_network_like(&self) -> bool {
         matches!(self, Sink::Network | Sink::ShellNetwork | Sink::Unknown)
     }
+}
+
+/// Tools that run a shell command (Claude Code `Bash`, Codex `shell`/`local_shell`, common agents).
+pub fn is_shell_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Bash"
+            | "shell"
+            | "local_shell"
+            | "execute_command"
+            | "run_terminal_cmd"
+            | "run_command"
+            | "shell_command"
+            | "container.exec"
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -350,6 +377,9 @@ mod tests {
             Some(Sink::Mcp)
         );
         assert_eq!(Sink::from_tool("Bash"), None);
+        assert_eq!(Sink::from_tool("shell"), None);
+        assert_eq!(Sink::from_tool("execute_command"), None);
+        assert_eq!(Sink::from_tool("write_to_file"), Some(Sink::FileWrite));
         assert_eq!(Sink::from_tool("SomethingNew"), Some(Sink::Unknown));
     }
 

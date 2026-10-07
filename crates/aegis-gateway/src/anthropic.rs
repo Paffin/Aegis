@@ -2,14 +2,11 @@
 //! RSP-02, RSP-07, API-03, API-04 — Anthropic Messages adapter.
 
 use crate::engine::{
-    process_blocks, Blk, Engine, IngressError, RequestCtx, SinkAudit, Stats, ATTACHMENT_NOTICE,
-    NOTICE,
+    process_blocks, Blk, Engine, IngressError, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE,
 };
 use crate::json::{self, Edits, Node};
 use aegis_core::crypto::{derive_salt, SaltInput};
-use aegis_core::policy::Sink;
 use aegis_core::pseudo::{Mapping, Source};
-use aegis_core::restore::{restore, sink_for_command, SinkContext};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -71,11 +68,7 @@ const SKIP_KEYS: &[&str] = &[
     "data",
 ];
 
-fn tool_path(input: &Value) -> Option<String> {
-    ["file_path", "path", "notebook_path"]
-        .iter()
-        .find_map(|k| input.get(*k).and_then(|v| v.as_str()).map(String::from))
-}
+use crate::common::tool_path;
 
 fn attachment_edit(edits: &mut Edits, block: &Node) {
     let repl =
@@ -402,145 +395,7 @@ enum NoticeInsert {
 // Response side
 // ---------------------------------------------------------------------------
 
-pub struct Denied {
-    pub rule: String,
-    pub sink: Sink,
-    pub reason: String,
-    pub classes: Vec<&'static str>,
-}
-
-fn reason_text(reason: &str) -> &'static str {
-    match reason {
-        "policy" => "значение запрещено к подстановке в этом месте",
-        "destination" => "адресат не определён или не является внутренним",
-        "origin" => "секрет можно записать только в тот файл, из которого он прочитан",
-        "file_write" => "в файл не может попасть псевдоним Aegis",
-        "collision" => "псевдоним неоднозначен",
-        "trifecta" => "в контексте одновременно приватные данные и недоверенный контент",
-        _ => "запрещено политикой",
-    }
-}
-
-/// API-04 text that replaces a denied call.
-pub fn denial_text(name: &str, d: &Denied, request_id: &str) -> String {
-    format!("[Aegis] Вызов инструмента {name} отклонён: {} (правило {}, место назначения {}). Если команда нужна, выполните её вручную. Request ID: {request_id}", reason_text(&d.reason), d.rule, d.sink.as_str())
-}
-
-pub fn restore_text(engine: &Engine, ctx: &RequestCtx, text: &str) -> (String, bool) {
-    let c = SinkContext {
-        sink: Sink::Text,
-        tool: "",
-        target_path: None,
-        detect: &engine.detect_cfg,
-        trifecta_cfg: &engine.trifecta,
-        trifecta: ctx.trifecta,
-    };
-    let o = restore(text, &ctx.mapping, &engine.restore_policy, &c);
-    (o.text, o.hinted)
-}
-
-fn leaf_sink(name: &str, key: &str, input: &Value, cmd_sink: Option<Sink>) -> Sink {
-    match name {
-        "Bash" | "shell" | "local_shell" => {
-            if key == "command" {
-                cmd_sink.unwrap_or(Sink::ShellNetwork)
-            } else {
-                Sink::Text
-            }
-        }
-        _ => {
-            let _ = input;
-            Sink::from_tool(name).unwrap_or(Sink::Unknown)
-        }
-    }
-}
-
-fn walk_strings(v: &mut Value, key: &str, f: &mut dyn FnMut(&str, &mut String)) {
-    match v {
-        Value::String(s) => f(key, s),
-        Value::Array(a) => a.iter_mut().for_each(|x| walk_strings(x, key, f)),
-        Value::Object(o) => {
-            for (k, x) in o.iter_mut() {
-                walk_strings(x, k, f);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Restore the input of one tool call. `Err` means the call must not reach the client (RST-05, RST-06, POL-07).
-pub fn restore_tool_call(
-    engine: &Engine,
-    ctx: &mut RequestCtx,
-    name: &str,
-    input: &mut Value,
-) -> Result<(), Denied> {
-    let path = tool_path(input);
-    let cmd_sink = input
-        .get("command")
-        .and_then(|c| c.as_str())
-        .map(sink_for_command);
-    let snapshot = input.clone();
-    let mut denied: Option<Denied> = None;
-    let mut blocked_by_trifecta = false;
-    walk_strings(input, "", &mut |key, s| {
-        let sink = leaf_sink(name, key, &snapshot, cmd_sink);
-        let c = SinkContext {
-            sink,
-            tool: name,
-            target_path: path.as_deref(),
-            detect: &engine.detect_cfg,
-            trifecta_cfg: &engine.trifecta,
-            trifecta: ctx.trifecta,
-        };
-        let o = restore(s, &ctx.mapping, &engine.restore_policy, &c);
-        if denied.is_none() {
-            if let Some(d) = o.denials.first() {
-                denied = Some(Denied {
-                    rule: d.rule.clone(),
-                    sink,
-                    reason: d.reason.to_string(),
-                    classes: vec![d.ty.class().as_str()],
-                });
-            } else if o.trifecta_blocked {
-                blocked_by_trifecta = true;
-                denied = Some(Denied {
-                    rule: "trifecta".into(),
-                    sink,
-                    reason: "trifecta".into(),
-                    classes: vec![],
-                });
-            }
-        }
-        *s = o.text;
-    });
-    let _ = blocked_by_trifecta;
-    let tool_sink = Sink::from_tool(name).unwrap_or_else(|| cmd_sink.unwrap_or(Sink::ShellNetwork));
-    match denied {
-        Some(d) => {
-            ctx.stats.denied += 1;
-            ctx.stats.rules.push(d.rule.clone());
-            ctx.stats.sinks.push(SinkAudit {
-                tool: name.to_string(),
-                sink: d.sink.as_str(),
-                decision: "deny",
-                rule: d.rule.clone(),
-                classes: d.classes.clone(),
-            });
-            Err(d)
-        }
-        None => {
-            ctx.stats.sinks.push(SinkAudit {
-                tool: name.to_string(),
-                sink: tool_sink.as_str(),
-                decision: "allow",
-                rule: "default".into(),
-                classes: vec![],
-            });
-            Ok(())
-        }
-    }
-}
+pub use crate::common::{denial_text, restore_text, restore_tool_call, Denied};
 
 /// Non-streaming response (RSP-08).
 pub fn transform_response(engine: &Engine, ctx: &mut RequestCtx, body: &[u8]) -> Vec<u8> {

@@ -73,6 +73,10 @@ pub struct ServerConfig {
     /// SEC-05: the providers' certificates must chain to this CA (PEM) and no public one.
     #[serde(default)]
     pub upstream_ca_file: Option<String>,
+    /// OBS-03: OTLP/HTTP collector (`http://collector:4318`); traces by stage without bodies.
+    /// Headers for it (an `Authorization`): `AEGIS_OTLP_HEADERS="k=v,k2=v2"`.
+    #[serde(default)]
+    pub otlp_endpoint: Option<String>,
     /// DET-03: memory for the detection cache, in megabytes.
     #[serde(default = "d_cache_mb")]
     pub detect_cache_mb: usize,

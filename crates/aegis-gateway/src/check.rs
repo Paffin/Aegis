@@ -209,6 +209,14 @@ pub async fn run(path: &str) -> bool {
         }
         None => {}
     }
+    if let Some(ep) = &cfg.otlp_endpoint {
+        match reqwest::Url::parse(ep) {
+            Ok(u) if matches!(u.scheme(), "http" | "https") => {
+                r.ok(format_args!("трассировки уходят в {}", shown(ep)))
+            }
+            _ => r.fail("otlp_endpoint: нужен адрес http:// или https://"),
+        }
+    }
     if let Some(p) = &cfg.upstream_ca_file {
         match std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| {
             crate::server::client_with_ca(

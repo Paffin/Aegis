@@ -53,6 +53,20 @@ async fn main() {
         .build(&k_t, &k_audit, ProviderKeys::from_env())
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
+    if let Some(ep) = &cfg.otlp_endpoint {
+        let headers = std::env::var("AEGIS_OTLP_HEADERS")
+            .unwrap_or_default()
+            .split(',')
+            .filter_map(|kv| kv.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect();
+        state.tracer = Some(aegis_gateway::trace::Tracer::start(
+            ep.clone(),
+            headers,
+            // not the provider client: it may trust only the provider's CA
+            aegis_gateway::server::client_with(Duration::from_secs(5), Duration::from_secs(5)),
+        ));
+    }
     let state = Arc::new(state);
 
     // CFG-01, CFG-02, CFG-06: the signed bundle supplies policy, dictionaries and virtual keys.

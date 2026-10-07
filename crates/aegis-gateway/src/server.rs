@@ -214,6 +214,8 @@ pub struct AppState {
     pub model_aliases: std::collections::BTreeMap<String, String>,
     pub audit: Audit,
     pub metrics: Arc<Metrics>,
+    /// OBS-03: traces by stage; `None` without `otlp_endpoint`.
+    pub tracer: Option<crate::trace::Tracer>,
     counter: AtomicU64,
 }
 
@@ -248,6 +250,7 @@ impl AppState {
             model_aliases: Default::default(),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
+            tracer: None,
             counter: AtomicU64::new(0),
         }
     }
@@ -574,6 +577,11 @@ fn with_aegis_headers(mut r: Response, request_id: &str, summary: &str) -> Respo
 }
 
 struct ReqInfo {
+    /// OBS-03
+    started_unix_ns: u64,
+    start: Instant,
+    upstream_ms: f64,
+    parent: Option<([u8; 16], [u8; 8])>,
     principal: String,
     client: String,
     model: String,
@@ -647,6 +655,27 @@ fn complete(
         &[],
         ctx.mapping.collisions as u64,
     );
+    if let Some(tr) = &st.tracer {
+        tr.emit(crate::trace::Finished {
+            request_id: ctx.request_id.clone(),
+            parent: info.parent,
+            start_unix_ns: info.started_unix_ns,
+            total_ms: info.start.elapsed().as_secs_f64() * 1000.0,
+            upstream_ms: info.upstream_ms,
+            stages: ["parse", "detect", "transform"]
+                .into_iter()
+                .filter_map(|s| ctx.stats.timings_ms.get(s).map(|ms| (s, *ms)))
+                .collect(),
+            route: info.route,
+            model: info.model.clone(),
+            client: info.client.clone(),
+            decision,
+            request_bytes: info.request_bytes,
+            blocks: ctx.stats.blocks_total,
+            entities: ctx.stats.by_class.values().sum(),
+            denied: ctx.stats.denied,
+        });
+    }
     let engine = st.engine.load();
     let bundle_version = st.bundle_version();
     let meta = EventMeta {
@@ -1039,6 +1068,16 @@ async fn proxy(
             .collect(),
     };
     let info = ReqInfo {
+        started_unix_ns: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+        start: Instant::now(),
+        upstream_ms: 0.0,
+        parent: headers
+            .get("traceparent")
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::trace::parse_traceparent),
         principal: principal.id.clone(),
         client: client_name(&headers),
         model,
@@ -1117,6 +1156,7 @@ async fn proxy(
             &forward_query(&query),
         ),
     };
+    let t_up = Instant::now();
     let up = st
         .http
         .post(url)
@@ -1124,6 +1164,10 @@ async fn proxy(
         .body(new_body)
         .send()
         .await;
+    let info = ReqInfo {
+        upstream_ms: t_up.elapsed().as_secs_f64() * 1000.0,
+        ..info
+    };
     let up = match up {
         Ok(r) => r,
         Err(_) => {

@@ -58,7 +58,7 @@ Cursor, Windsurf and the built-in GitHub Copilot completions talk to the vendors
 
 ## Status: alpha, read this
 
-Measured with `aegis-bench`, repeated in CI: 4.7 false positives per 10k lines on 2.2M lines of open-source code (target: below 1; mostly real values such as package author e-mails); 100 % recall on 21 of 22 synthetic types and 98.9 % on assignment passwords (the corpus was written by the detectors' author, so the figure is optimistic); warm-turn latency p50 ≈ 4 ms / p95 ≈ 6 ms at ~219k tokens of context; 192 tests.
+Measured with `aegis-bench`, repeated in CI: 4.5 false positives per 10k lines on 2.3M lines of open-source code (target: below 1; mostly real values such as package author e-mails); 100 % recall on 21 of 22 synthetic types and 98.9 % on assignment passwords (the corpus was written by the detectors' author, so the figure is optimistic); warm-turn latency p50 ≈ 4 ms / p95 ≈ 6 ms at ~219k tokens of context; 210 tests (including property tests, fuzzing and 1300+ exfiltration scenarios).
 
 **Not verified yet, and the main risk:** no real client (Claude Code, Codex, Gemini CLI, …) has been run against Aegis and no provider was called. The protocols follow vendor documentation and are tested with synthetic requests. The Docker image and the Helm chart were not built or rendered. Details: [docs/STATUS.md](docs/STATUS.md).
 

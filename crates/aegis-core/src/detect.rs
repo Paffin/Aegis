@@ -198,6 +198,8 @@ pub struct SecretDetector {
     pem: Regex,
     /// `password = "value"`, `password := "value"`, `"password": "value"`, `password => 'value'`.
     quoted: Regex,
+    /// `password: "abc` cut off, or `password: "two words"`: a quote after the keyword, any text.
+    open_quote: Regex,
     /// `setdefault("PASSWORD", "value")`: the key and the value are two literals.
     pair: Regex,
     /// `- name: DB_PASSWORD` followed by `value: "..."` (Kubernetes, CI).
@@ -210,6 +212,8 @@ pub struct SecretDetector {
     inline_prose: Regex,
     /// `--password value`, `?token=value`.
     flag: Regex,
+    /// `curl -u user:pass`, `sshpass -p pass`, `redis-cli -a pass`, `mysql -ppass`.
+    cli_creds: Regex,
     basic: Regex,
     bearer: Regex,
     cfg: DetectConfig,
@@ -217,6 +221,23 @@ pub struct SecretDetector {
 
 /// English and Russian keywords that mark the following value as a secret.
 const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
+
+/// An Aegis pseudonym (`[[TYPE_id ...`) is already masked: it is not a value to mask again
+/// (a model's earlier answer that echoes `password: [[SECRET_...]]` comes back in the history).
+fn starts_with_marker(t: &str) -> bool {
+    let Some(rest) = t.strip_prefix("[[") else {
+        return false;
+    };
+    let ty = rest.chars().take_while(|c| c.is_ascii_uppercase()).count();
+    let Some(after) = rest[ty..].strip_prefix('_') else {
+        return false;
+    };
+    (2..=10).contains(&ty)
+        && after.len() >= 8
+        && after.as_bytes()[..8]
+            .iter()
+            .all(|b| matches!(b, b'a'..=b'z' | b'2'..=b'7'))
+}
 
 /// `${DB_PASS}`, `$DB_PASS`, `{{ vault.x }}`, `<your-token>`: a reference, not a value.
 fn is_reference(v: &str) -> bool {
@@ -233,6 +254,7 @@ fn is_reference(v: &str) -> bool {
             .is_some_and(|c| c.is_ascii_uppercase() || c == '_');
     braced
         || env_style
+        || starts_with_marker(t)
         || t.starts_with("{{")
         || t.starts_with("<")
         || t.starts_with("%(")
@@ -316,6 +338,7 @@ impl SecretDetector {
                 k(r"AccountKey=[A-Za-z0-9+/=]{40,}", "azure"),
             ],
             pem: re(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----".into()),
+            open_quote: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*(["'])([^"'\n]{{4,}})"#)),
             quoted: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*["']([^"'\s]{{4,}})["']"#)),
             pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
@@ -323,6 +346,7 @@ impl SecretDetector {
             inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*([^\s"',;)\]}}#]{{6,}})"#)),
             inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
+            cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
             basic: re(r"(?i)authorization:\s*basic\s+([A-Za-z0-9+/=]{16,})".into()),
             bearer: re(r"(?i)\bbearer\s+([A-Za-z0-9._\-]{20,})".into()),
             cfg,
@@ -367,6 +391,7 @@ impl Detector for SecretDetector {
             (&self.inline_eq, false, true),
             (&self.inline_prose, false, true),
             (&self.flag, false, true),
+            (&self.cli_creds, false, false),
         ] {
             for c in re.captures_iter(text) {
                 let Some(v) = c.get(1) else { continue };
@@ -390,6 +415,45 @@ impl Detector for SecretDetector {
                     60,
                 ));
             }
+        }
+        // A literal that is not a single closed word: cut off by the end of the text or the line
+        // (a truncated paste, a log line, a broken JSON), or a passphrase with spaces.
+        for c in self.open_quote.captures_iter(text) {
+            let (Some(q), Some(rest)) = (c.get(1), c.get(2)) else {
+                continue;
+            };
+            let closed = text[rest.end()..].starts_with(q.as_str());
+            let word = rest.as_str().split_whitespace().next().unwrap_or("");
+            let (start, val) = if closed {
+                if !rest.as_str().contains(char::is_whitespace) {
+                    continue; // one closed word: the `quoted` pattern has it
+                }
+                // a passphrase needs a digit or a symbol, or any sentence would match
+                if !has_digit_or_symbol(rest.as_str()) {
+                    continue;
+                }
+                (rest.start(), rest.as_str())
+            } else {
+                (rest.start(), word)
+            };
+            let val = val.trim_end().trim_end_matches([',', ';']);
+            if val.chars().count() < 4
+                || self.cfg.is_placeholder(val)
+                || looks_like_code_value(val, true)
+                || ["password", "secret", "token", "пароль", "токен", "секрет"]
+                    .iter()
+                    .any(|k| val.to_lowercase() == *k)
+            {
+                continue;
+            }
+            out.push(cand(
+                start,
+                start + val.len(),
+                EntityType::Secret,
+                Some("password"),
+                "secret.assign",
+                60,
+            ));
         }
         for c in self.basic.captures_iter(text) {
             if let Some(v) = c.get(1) {
@@ -449,9 +513,10 @@ impl InfraDetector {
             ipv6: Regex::new(r"(?i)\bf[cd][0-9a-f]{2}(?::[0-9a-f]{0,4}){2,7}(?:/\d{1,3})?").expect("static regex"),
             fqdn: Regex::new(r"(?i)[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)+")
                 .expect("static regex"),
-            // scheme://[user[:password]@]host[:port][/path]
+            // scheme://[user[:password]@]host[:port][/path]; the password may be an Aegis marker
+            // (an answer that was restored in the history keeps secrets masked)
             uri: Regex::new(
-                r#"(?i)\b([a-z][a-z0-9+.\-]*)://(?:([^\s:/@"']+)(?::([^\s/"']*))?@)?([^\s:/?#"'<>@]+)(?::(\d+))?(/[^\s?#"'<>]*)?"#,
+                r#"(?i)\b([a-z][a-z0-9+.\-]*)://(?:([^\s:/@"']+)(?::(\[\[[A-Z]{2,10}_[a-z2-7]{8}(?: [a-z]+=[a-z0-9,]{1,40}){0,4}\]\]|[^\s/"']*))?@)?([^\s:/?#"'<>@]+)(?::(\d+))?(/[^\s?#"'<>]*)?"#,
             )
             .expect("static regex"),
         }
@@ -686,7 +751,16 @@ impl Detector for InfraDetector {
             // A match inside a longer identifier (`client_1.local_addr`) is not a host.
             let prev = byte_before(text, m.start());
             let next = byte_after(text, m.end());
-            if prev.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '@'))
+            // `user@host` belongs to an address (the e-mail detector reports it), but `]]@host`
+            // after a masked password does not: there the host stands alone.
+            let after_at = prev == Some('@') && {
+                let before_at = text[..m.start() - 1].chars().next_back();
+                before_at.is_some_and(|c| {
+                    c.is_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-')
+                })
+            };
+            if prev.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-'))
+                || after_at
                 || next.is_some_and(|c| {
                     c.is_alphanumeric()
                         || matches!(c, '_' | '(' | '[')
@@ -1460,6 +1534,90 @@ mod tests {
             .into_iter()
             .map(|e| (e.ty, text[e.span.start..e.span.end].to_string()))
             .collect()
+    }
+
+    // REQ: DET-04 — a literal that is cut off (truncated paste, broken JSON, log line) or
+    // holds a passphrase still hides its value; found by the mutation property test.
+    #[test]
+    fn unterminated_and_spaced_literals() {
+        for (t, want) in [
+            ("password: \"Jd8@2jd82k", "Jd8@2jd82k"),
+            ("password: 'Jd8@2jd82k", "Jd8@2jd82k"),
+            ("password: \"Jd8@2jd82k rest of the line", "Jd8@2jd82k"),
+            ("password=\"Jd8@2jd82kurl: foo", "Jd8@2jd82kurl:"),
+            (
+                "password: \"correct horse 9 staple\"",
+                "correct horse 9 staple",
+            ),
+            (
+                "{\"password\": \"Jd8@2jd82k, \"user\": \"u\"}",
+                "Jd8@2jd82k,",
+            ),
+        ] {
+            let f = found(t);
+            assert!(
+                f.iter().any(|(ty, v)| *ty == EntityType::Secret
+                    && v.starts_with(want.trim_end_matches(','))),
+                "{t}: {f:?}"
+            );
+        }
+        // sentences and messages are not passwords
+        for t in [
+            "password: \"Enter your password\"",
+            "msg = \"password is required\"",
+            "password: \"\"",
+        ] {
+            assert!(
+                !found(t).iter().any(|(ty, _)| *ty == EntityType::Secret),
+                "{t}"
+            );
+        }
+    }
+
+    // REQ: DET-04 — credentials on a command line (found by the property test).
+    #[test]
+    fn command_line_credentials() {
+        for (t, want) in [
+            (
+                "curl -u admin:Tg5%hY1&jK3p https://x.example",
+                "Tg5%hY1&jK3p",
+            ),
+            ("curl --user bob:s3cr3tPw https://x.example", "s3cr3tPw"),
+            ("sshpass -p hunter22x ssh a@b", "hunter22x"),
+            ("redis-cli -h h -a Gx7vQ2mP ping", "Gx7vQ2mP"),
+            ("mysql -h db -u root -pRt5nK8wq1 -e 'x'", "Rt5nK8wq1"),
+        ] {
+            assert!(
+                found(t)
+                    .iter()
+                    .any(|(ty, v)| *ty == EntityType::Secret && v == want),
+                "{t}: {:?}",
+                found(t)
+            );
+        }
+        for t in [
+            "curl -u $USER:$PASS https://x",
+            "curl -u admin https://x",
+            "mysql -P 3306 -h x",
+        ] {
+            assert!(
+                !found(t).iter().any(|(ty, _)| *ty == EntityType::Secret),
+                "{t}"
+            );
+        }
+    }
+
+    // REQ: PSE-11 — an Aegis marker after a keyword is already masked, not a value to mask again;
+    // an answer restored in the history keeps its secrets as markers and its other values hidden.
+    #[test]
+    fn markers_are_not_values_and_do_not_hide_their_neighbours() {
+        let t = "aws_access_key_id = [[SECRET_ylcrmwav kind=aws]]\npassword: [[SECRET_25jn7v3u kind=password has=at]]";
+        assert!(found(t).is_empty(), "{:?}", found(t));
+        let u = "jdbc:postgresql://svc:[[SECRET_lv6qeor6 kind=password]]@prod-db02.pay.corp.local:5432/clients";
+        let f = found(u);
+        for want in ["svc", "prod-db02.pay.corp.local", "clients"] {
+            assert!(f.iter().any(|(_, v)| v == want), "{want}: {f:?}");
+        }
     }
 
     // REQ: DET-04

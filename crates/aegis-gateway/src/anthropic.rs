@@ -257,9 +257,23 @@ pub fn transform_request(
                 for b in items {
                     let ty = b.str_at("type", body).unwrap_or_default();
                     match ty.as_str() {
-                        // INV-2: signed and encrypted blocks pass untouched.
+                        // INV-2: signed and encrypted blocks pass untouched. A block without a
+                        // signature is not one the provider issued: its text is scanned like any other.
                         "thinking" | "redacted_thinking" => {
-                            opaque.insert(b.span().start);
+                            let sealed = ["signature", "data"]
+                                .iter()
+                                .any(|k| b.str_at(k, body).is_some_and(|s| !s.is_empty()));
+                            // The sealed text is not touched (and not scanned: it is the model's own
+                            // output). The `signature` is an opaque token the sweep guards: it is not
+                            // changed either, but a value in it rejects the request. Any other field
+                            // of the block is scanned.
+                            if sealed {
+                                for key in ["thinking", "data"] {
+                                    if let Some(n) = b.get(key) {
+                                        opaque.insert(n.span().start);
+                                    }
+                                }
+                            }
                         }
                         t if is_attachment(t) => attachment_edit(&mut edits, b),
                         "text" => {

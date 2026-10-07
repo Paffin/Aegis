@@ -444,6 +444,11 @@ mod tests {
 /// Keys whose string values the provider needs byte-identical (identifiers and enumerations).
 /// They are not masked; a detected secret in one of them rejects the request instead.
 const STRUCTURAL_KEYS: &[&str] = &[
+    // opaque tokens issued by the provider: changing a byte invalidates them (INV-2)
+    "signature",
+    "thoughtSignature",
+    "thought_signature",
+    "encrypted_content",
     "type",
     "id",
     "call_id",

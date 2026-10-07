@@ -3,7 +3,7 @@
 //!
 //! * `previous_response_id`, `item_reference` and `store: true` are refused (PRO-03); an omitted
 //!   `store` is set to `false`, so the provider keeps nothing and the history in the request is complete.
-//! * `reasoning` items with `encrypted_content` are opaque (INV-2).
+//! * `encrypted_content` of `reasoning` items is never touched (INV-2).
 
 use crate::anthropic::{Reject, ReqMeta};
 use crate::common::{
@@ -198,7 +198,6 @@ pub fn transform_request(
     let mut first_user: Vec<String> = vec![];
     let mut first_user_done = false;
     let mut notice_done = false;
-    let mut opaque: HashSet<usize> = HashSet::new();
 
     for (ni, n) in nested.iter().enumerate() {
         let mut ls = vec![];
@@ -255,10 +254,9 @@ pub fn transform_request(
                     Source::Tool { tool: name, path }
                 };
                 match ty.as_str() {
-                    // INV-2: opaque
-                    "reasoning" => {
-                        opaque.insert(it.span().start);
-                    }
+                    // INV-2: `encrypted_content` is never touched (the sweep treats it as an opaque
+                    // token); the rest of a reasoning item is model text or unknown and is scanned.
+                    "reasoning" => {}
                     "message" => {
                         let role = it.str_at("role", body).unwrap_or_default();
                         let is_first_user = role == "user" && !first_user_done;
@@ -380,7 +378,6 @@ pub fn transform_request(
 
     // PRO-10: whatever the adapter did not recognise is scanned too (default deny).
     let mut skip: HashSet<usize> = edits.starts().collect();
-    skip.extend(opaque);
     skip.extend(
         col.blocks
             .iter()
@@ -906,7 +903,7 @@ mod tests {
             "instructions": "You are a coding agent.",
             "input": [
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Проверь подключение. Владелец Иван Петров"}]},
-                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAA-prod-db01.pay.corp.local"},
+                {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAAAB-opaque-0123456789-AbCdEf"},
                 {"type": "function_call", "call_id": "c1", "name": "read_file", "arguments": "{\"path\":\"config/database.yaml\"}"},
                 {"type": "function_call_output", "call_id": "c1", "output": CONFIG},
                 {"type": "local_shell_call", "call_id": "c2", "action": {"type": "exec", "command": ["cat", "helm/values-prod.yaml"], "working_directory": "/repo"}},
@@ -938,14 +935,14 @@ mod tests {
             "pay.corp.local\\\"}",
         ] {
             assert!(
-                !s.replace("gAAAA-prod-db01.pay.corp.local", "")
+                !s.replace("gAAAAB-opaque-0123456789-AbCdEf", "")
                     .contains(leaked),
                 "{leaked}"
             );
         }
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(
-            v["input"][1]["encrypted_content"], "gAAAA-prod-db01.pay.corp.local",
+            v["input"][1]["encrypted_content"], "gAAAAB-opaque-0123456789-AbCdEf",
             "INV-2: reasoning is opaque"
         );
         assert!(v["instructions"]

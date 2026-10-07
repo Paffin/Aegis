@@ -42,10 +42,6 @@ fn get2<'a>(n: &'a Node, camel: &str, snake: &str) -> Option<&'a Node> {
     n.get(camel).or_else(|| n.get(snake))
 }
 
-fn is_true(n: Option<&Node>, body: &[u8]) -> bool {
-    n.is_some_and(|n| n.raw(body) == b"true")
-}
-
 pub fn transform_request(
     engine: &Engine,
     meta: &ReqMeta<'_>,
@@ -166,11 +162,8 @@ pub fn transform_request(
         let role = c.str_at("role", body).unwrap_or_else(|| "user".into());
         let is_first_user = role == "user" && !first_user_done;
         for p in c.get("parts").map(|p| p.items()).unwrap_or(&[]) {
-            // INV-2: thought parts carry the model's own reasoning and signatures.
-            if is_true(p.get("thought"), body) {
-                d.opaque.insert(p.span().start);
-                continue;
-            }
+            // INV-2 for Gemini: `thoughtSignature` is a separate field and is never touched. The
+            // text of a thought part is a summary, not signed: it is scanned like any other text.
             if get2(p, "inlineData", "inline_data").is_some()
                 || get2(p, "fileData", "file_data").is_some()
             {

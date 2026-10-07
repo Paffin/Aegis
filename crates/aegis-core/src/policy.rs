@@ -3,7 +3,7 @@
 //! Restoration policy: (class | type | type+kind) × sink → action, and the
 //! three-condition rule.
 
-use crate::types::{Class, EntityType};
+use crate::types::{Class, Entity, EntityType};
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -423,5 +423,153 @@ mod tests {
         assert!(!cfg.path_is_untrusted("src/main.rs"));
         assert!(cfg.path_is_untrusted("web/node_modules/x/README.md"));
         assert!(cfg.tool_is_untrusted("WebFetch"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ingress policy (PSE-12)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ingress {
+    Allow,
+    Mask,
+    DropBlock,
+    BlockRequest,
+}
+
+#[derive(Clone, Debug)]
+pub struct IngressRule {
+    pub id: String,
+    pub class: Option<Class>,
+    pub ty: Option<EntityType>,
+    pub kind: Option<String>,
+    /// Applies only to requests on this route (POL-02).
+    pub route: Option<String>,
+    pub action: Ingress,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IngressPolicy {
+    pub rules: Vec<IngressRule>,
+}
+
+impl IngressPolicy {
+    /// PSE-12: default is `mask`; specificity as in POL-03 (type+kind, type, class), then order.
+    /// A rule bound to the request's route beats an unbound rule of the same specificity.
+    pub fn decide(&self, e: &Entity, route: &str) -> (Ingress, String) {
+        let mut best: Option<(u8, &IngressRule)> = None;
+        for r in &self.rules {
+            if r.route.as_deref().is_some_and(|rt| rt != route) {
+                continue;
+            }
+            let base = match (&r.ty, &r.kind, &r.class) {
+                (Some(t), Some(k), _) if *t == e.ty && Some(k.as_str()) == e.kind => 3,
+                (Some(t), None, _) if *t == e.ty => 2,
+                (None, None, Some(c)) if *c == e.ty.class() => 1,
+                _ => continue,
+            };
+            let spec = base * 2 + u8::from(r.route.is_some());
+            if best.is_none_or(|(s, _)| spec > s) {
+                best = Some((spec, r));
+            }
+        }
+        match best {
+            Some((_, r)) => (r.action, r.id.clone()),
+            None => (Ingress::Mask, "default".into()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ingress_tests {
+    use super::*;
+    use crate::types::Span;
+
+    fn ent(ty: EntityType, kind: Option<&'static str>) -> Entity {
+        Entity {
+            span: Span { start: 0, end: 1 },
+            ty,
+            kind,
+            detector: "t",
+            person_key: None,
+        }
+    }
+
+    fn rule(
+        id: &str,
+        class: Option<Class>,
+        ty: Option<EntityType>,
+        kind: Option<&str>,
+        route: Option<&str>,
+        a: Ingress,
+    ) -> IngressRule {
+        IngressRule {
+            id: id.into(),
+            class,
+            ty,
+            kind: kind.map(String::from),
+            route: route.map(String::from),
+            action: a,
+        }
+    }
+
+    // REQ: PSE-12
+    #[test]
+    fn default_is_mask() {
+        assert_eq!(
+            IngressPolicy::default().decide(&ent(EntityType::Host, None), "r"),
+            (Ingress::Mask, "default".into())
+        );
+    }
+
+    // REQ: POL-03, POL-02 — specificity, then route-bound rules, independent of order.
+    #[test]
+    fn specificity_and_route() {
+        let p = IngressPolicy {
+            rules: vec![
+                rule(
+                    "R-class",
+                    Some(Class::Secret),
+                    None,
+                    None,
+                    None,
+                    Ingress::Mask,
+                ),
+                rule(
+                    "R-pem",
+                    None,
+                    Some(EntityType::Secret),
+                    Some("pem"),
+                    None,
+                    Ingress::BlockRequest,
+                ),
+                rule(
+                    "R-local",
+                    Some(Class::Infra),
+                    None,
+                    None,
+                    Some("local"),
+                    Ingress::Allow,
+                ),
+            ],
+        };
+        assert_eq!(
+            p.decide(&ent(EntityType::Secret, Some("pem")), "any").1,
+            "R-pem"
+        );
+        assert_eq!(
+            p.decide(&ent(EntityType::Secret, Some("jwt")), "any").1,
+            "R-class"
+        );
+        assert_eq!(
+            p.decide(&ent(EntityType::Host, None), "local"),
+            (Ingress::Allow, "R-local".into())
+        );
+        assert_eq!(
+            p.decide(&ent(EntityType::Host, None), "external").0,
+            Ingress::Mask,
+            "route-bound rule does not leak to other routes"
+        );
     }
 }

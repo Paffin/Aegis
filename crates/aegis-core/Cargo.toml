@@ -13,6 +13,9 @@ regex.workspace = true
 aho-corasick.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
+serde_yaml_ng.workspace = true
+ed25519-dalek.workspace = true
+base64.workspace = true
 
 [lints]
 workspace = true

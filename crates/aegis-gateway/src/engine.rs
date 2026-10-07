@@ -4,7 +4,7 @@
 use crate::json::Node;
 use aegis_core::crypto::{Salt, TenantKeys};
 use aegis_core::detect::{DetectConfig, Pipeline};
-use aegis_core::policy::{RestorePolicy, TrifectaConfig, TrifectaState};
+use aegis_core::policy::{Ingress, IngressPolicy, RestorePolicy, TrifectaConfig, TrifectaState};
 use aegis_core::pseudo::{Mapping, PseudoConfig, Pseudonymizer, Source};
 use aegis_core::types::{Class, Entity, EntityType};
 use sha2::{Digest, Sha256};
@@ -15,50 +15,6 @@ use std::sync::Mutex;
 pub const NOTICE: &str = "Aegis notice: some values in this context are replaced with pseudonyms.\nMarkers like [[TYPE_id ...]], hostnames ending in .aegis.invalid, IPv4 addresses\nin 240.0.0.0/4 and IPv6 addresses in 3fff::/20 stand for real values.\nCopy them exactly as written. Do not modify them, do not build new names from them,\nand do not try to guess the real values. Treat them as valid in code and commands.";
 
 pub const ATTACHMENT_NOTICE: &str = "[Aegis: вложение удалено политикой]";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ingress {
-    Allow,
-    Mask,
-    DropBlock,
-    BlockRequest,
-}
-
-#[derive(Clone, Debug)]
-pub struct IngressRule {
-    pub id: String,
-    pub class: Option<Class>,
-    pub ty: Option<EntityType>,
-    pub kind: Option<String>,
-    pub action: Ingress,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct IngressPolicy {
-    pub rules: Vec<IngressRule>,
-}
-
-impl IngressPolicy {
-    /// PSE-12 default is `mask`; specificity as in POL-03.
-    pub fn decide(&self, e: &Entity) -> (Ingress, String) {
-        let mut best: Option<(u8, &IngressRule)> = None;
-        for r in &self.rules {
-            let spec = match (&r.ty, &r.kind, &r.class) {
-                (Some(t), Some(k), _) if *t == e.ty && Some(k.as_str()) == e.kind => 3,
-                (Some(t), None, _) if *t == e.ty => 2,
-                (None, None, Some(c)) if *c == e.ty.class() => 1,
-                _ => continue,
-            };
-            if best.is_none_or(|(s, _)| spec > s) {
-                best = Some((spec, r));
-            }
-        }
-        match best {
-            Some((_, r)) => (r.action, r.id.clone()),
-            None => (Ingress::Mask, "default".into()),
-        }
-    }
-}
 
 pub struct Engine {
     pub keys: TenantKeys,
@@ -86,6 +42,24 @@ impl Engine {
             restore_policy: RestorePolicy::default(),
             trifecta: TrifectaConfig::default(),
             ingress: IngressPolicy::default(),
+            cache: Mutex::new(DetectCache::new(200_000)),
+        }
+    }
+
+    /// Build the engine from a compiled bundle policy (CFG-01). Keys never come from the bundle.
+    pub fn from_compiled(keys: TenantKeys, c: aegis_core::bundle::Compiled) -> Self {
+        let mut pipeline = Pipeline::new(c.detect.clone(), c.dict);
+        for d in c.custom {
+            pipeline.add_detector(Box::new(d));
+        }
+        Self {
+            keys,
+            pipeline,
+            detect_cfg: c.detect,
+            pseudo_cfg: c.pseudo,
+            restore_policy: c.restore,
+            trifecta: c.trifecta,
+            ingress: c.ingress,
             cache: Mutex::new(DetectCache::new(200_000)),
         }
     }
@@ -210,6 +184,8 @@ pub struct RequestCtx {
     pub classes: HashSet<Class>,
     pub stats: Stats,
     pub request_id: String,
+    /// Route of the request, for route-bound policy rules (POL-02).
+    pub route: String,
     /// `HMAC(K_audit, salt)` for per-conversation reports (AUD-03).
     pub conversation_hash: String,
 }
@@ -279,7 +255,7 @@ pub fn process_blocks(
         }
         let mut keep = vec![];
         for e in ents {
-            let (act, rule) = engine.ingress.decide(&e);
+            let (act, rule) = engine.ingress.decide(&e, &ctx.route);
             match act {
                 Ingress::Allow => {}
                 Ingress::Mask => {
@@ -329,6 +305,7 @@ impl RequestCtx {
             classes: HashSet::new(),
             stats: Stats::default(),
             request_id: request_id.to_string(),
+            route: String::new(),
             conversation_hash: String::new(),
         }
     }

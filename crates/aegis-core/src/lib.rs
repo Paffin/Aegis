@@ -4,9 +4,11 @@
 //! (INV-1) and never logs or formats sensitive values (INV-6).
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod bundle;
 pub mod crypto;
 pub mod detect;
 pub mod policy;
+pub mod policytest;
 pub mod pseudo;
 pub mod restore;
 pub mod sensitive;

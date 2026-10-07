@@ -384,6 +384,7 @@ mod tests {
                 principal: "u",
                 conversation: Some("c"),
                 request_id: "req-1",
+                route: "test",
             },
             &req,
         )

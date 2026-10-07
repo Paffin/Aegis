@@ -29,6 +29,27 @@ use std::time::Instant;
 pub const MAX_BODY: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
+pub struct VKey {
+    pub principal: Principal,
+    /// Unix seconds; `None` = no expiry.
+    pub expires: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BundleStatus {
+    pub version: String,
+    pub expires_at: i64,
+    pub key_id: String,
+}
+
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug)]
 pub struct Principal {
     pub id: String,
     pub groups: Vec<String>,
@@ -41,32 +62,70 @@ pub struct Upstream {
 }
 
 pub struct AppState {
-    pub engine: Engine,
+    /// Replaced atomically when a new bundle is applied (CFG-02).
+    pub engine: arc_swap::ArcSwap<Engine>,
     pub upstream: Upstream,
     /// OpenAI-compatible provider (Chat Completions, Responses).
     pub openai: Option<Upstream>,
     /// SHA-256 (hex) of the virtual key → principal (IAM-03: keys are stored as hashes only).
-    pub keys: HashMap<String, Principal>,
+    pub keys: arc_swap::ArcSwap<HashMap<String, VKey>>,
+    /// Present once a bundle was applied; `bundle_required` makes its absence or expiry fail-closed (NFR-09).
+    pub bundle: std::sync::Mutex<Option<BundleStatus>>,
+    pub bundle_required: bool,
     pub http: reqwest::Client,
     pub audit: Audit,
     pub metrics: Arc<Metrics>,
-    pub bundle_version: String,
     counter: AtomicU64,
 }
 
 impl AppState {
     pub fn new(engine: Engine, upstream: Upstream, keys: HashMap<String, Principal>) -> Self {
+        let keys = keys
+            .into_iter()
+            .map(|(h, p)| {
+                (
+                    h,
+                    VKey {
+                        principal: p,
+                        expires: None,
+                    },
+                )
+            })
+            .collect();
         Self {
-            engine,
+            engine: arc_swap::ArcSwap::from_pointee(engine),
             upstream,
             openai: None,
-            keys,
+            keys: arc_swap::ArcSwap::from_pointee(keys),
+            bundle: std::sync::Mutex::new(None),
+            bundle_required: false,
             http: reqwest::Client::new(),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
-            bundle_version: "dev".into(),
             counter: AtomicU64::new(0),
         }
+    }
+
+    /// NFR-09, CFG-04: with a bundle configured, no valid bundle means no traffic.
+    pub fn readiness(&self) -> Result<(), String> {
+        if !self.bundle_required {
+            return Ok(());
+        }
+        match self.bundle.lock().ok().and_then(|b| b.clone()) {
+            None => Err("бандл политики не загружен".into()),
+            Some(b) if b.expires_at <= now_unix() => {
+                Err(format!("срок действия бандла {} истёк", b.version))
+            }
+            Some(_) => Ok(()),
+        }
+    }
+
+    pub fn bundle_version(&self) -> String {
+        self.bundle
+            .lock()
+            .ok()
+            .and_then(|b| b.as_ref().map(|b| b.version.clone()))
+            .unwrap_or_else(|| "dev".into())
     }
 
     fn request_id(&self) -> String {
@@ -199,10 +258,33 @@ pub fn app(state: Arc<AppState>) -> Router {
 pub fn admin_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(|| async { "ready" }))
+        .route(
+            "/readyz",
+            get(|State(st): State<Arc<AppState>>| async move {
+                match st.readiness() {
+                    Ok(()) => (axum::http::StatusCode::OK, "ready".to_string()),
+                    Err(why) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, why),
+                }
+            }),
+        )
         .route(
             "/metrics",
-            get(|State(st): State<Arc<AppState>>| async move { st.metrics.render() }),
+            get(|State(st): State<Arc<AppState>>| async move {
+                // OBS-01: bundle version and time to expiry
+                if let Some(b) = st.bundle.lock().ok().and_then(|b| b.clone()) {
+                    st.metrics.set_gauge(
+                        "aegis_bundle_expires_in_seconds",
+                        &[],
+                        (b.expires_at - now_unix()) as f64,
+                    );
+                    st.metrics.set_gauge(
+                        "aegis_bundle_info",
+                        &[("version", &b.version), ("signer", &b.key_id)],
+                        1.0,
+                    );
+                }
+                st.metrics.render()
+            }),
         )
         .with_state(state)
 }
@@ -243,10 +325,11 @@ fn upstream_headers(h: &HeaderMap, st: &AppState) -> reqwest::header::HeaderMap 
 fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, Box<Response>> {
     let deny = |m: &str| Box::new(err_response(401, "authentication_error", m));
     let key = client_key(h).ok_or_else(|| deny("Aegis: требуется виртуальный ключ"))?;
-    st.keys
-        .get(&hash_key(&key))
-        .cloned()
-        .ok_or_else(|| deny("Aegis: неверный или отозванный ключ"))
+    let keys = st.keys.load();
+    match keys.get(&hash_key(&key)) {
+        Some(k) if k.expires.is_none_or(|e| e > now_unix()) => Ok(k.principal.clone()),
+        _ => Err(deny("Aegis: неверный или отозванный ключ")),
+    }
 }
 
 fn with_aegis_headers(mut r: Response, request_id: &str, summary: &str) -> Response {
@@ -322,15 +405,17 @@ fn complete(
         &[],
         ctx.mapping.collisions as u64,
     );
+    let engine = st.engine.load();
+    let bundle_version = st.bundle_version();
     let meta = EventMeta {
-        tenant: &st.engine.keys.tenant,
+        tenant: &engine.keys.tenant,
         principal: &info.principal,
         client: &info.client,
         route: info.route,
         model: &info.model,
         request_bytes: info.request_bytes,
-        bundle_version: &st.bundle_version,
-        trifecta_mode: match st.engine.trifecta.mode {
+        bundle_version: &bundle_version,
+        trifecta_mode: match engine.trifecta.mode {
             aegis_core::policy::TrifectaMode::Enforce => "enforce",
             aegis_core::policy::TrifectaMode::Monitor => "monitor",
         },
@@ -430,6 +515,16 @@ async fn proxy(
     if method != Method::POST {
         return fail(405, "invalid_request_error", "Aegis: ожидается POST");
     }
+    if let Err(why) = st.readiness() {
+        st.metrics
+            .inc("aegis_requests_total", &[("decision", "fail_closed")], 1);
+        return fail(
+            503,
+            "api_error",
+            &format!("Aegis: {why}; запросы остановлены (fail-closed)"),
+        );
+    }
+    let engine = st.engine.load_full();
     let principal = match authenticate(&headers, &st) {
         Ok(p) => p,
         Err(r) => {
@@ -495,11 +590,12 @@ async fn proxy(
         principal: &principal.id,
         conversation: conv.as_deref(),
         request_id: &rid,
+        route: proto.route(),
     };
     let transformed = match proto {
-        Protocol::Anthropic => transform_request(&st.engine, &meta, &body),
-        Protocol::OpenAiChat => openai_chat::transform_request(&st.engine, &meta, &body),
-        Protocol::OpenAiResponses => openai_responses::transform_request(&st.engine, &meta, &body),
+        Protocol::Anthropic => transform_request(&engine, &meta, &body),
+        Protocol::OpenAiChat => openai_chat::transform_request(&engine, &meta, &body),
+        Protocol::OpenAiResponses => openai_responses::transform_request(&engine, &meta, &body),
     };
     let (new_body, ctx) = match transformed {
         Ok(x) => x,
@@ -560,14 +656,12 @@ async fn proxy(
         let st2 = st.clone();
         tokio::spawn(async move {
             let mut t = match proto {
-                Protocol::Anthropic => {
-                    AnyStream::A(Box::new(StreamTransformer::new(&st2.engine, ctx)))
-                }
+                Protocol::Anthropic => AnyStream::A(Box::new(StreamTransformer::new(&engine, ctx))),
                 Protocol::OpenAiChat => {
-                    AnyStream::C(Box::new(ChatStreamTransformer::new(&st2.engine, ctx)))
+                    AnyStream::C(Box::new(ChatStreamTransformer::new(&engine, ctx)))
                 }
                 Protocol::OpenAiResponses => {
-                    AnyStream::R(Box::new(ResponsesStreamTransformer::new(&st2.engine, ctx)))
+                    AnyStream::R(Box::new(ResponsesStreamTransformer::new(&engine, ctx)))
                 }
             };
             let mut s = up.bytes_stream();
@@ -607,10 +701,10 @@ async fn proxy(
     // RSP-09: non-2xx bodies are provider errors and pass through.
     let out = if status == 200 {
         match proto {
-            Protocol::Anthropic => transform_response(&st.engine, &mut ctx, &bytes),
-            Protocol::OpenAiChat => openai_chat::transform_response(&st.engine, &mut ctx, &bytes),
+            Protocol::Anthropic => transform_response(&engine, &mut ctx, &bytes),
+            Protocol::OpenAiChat => openai_chat::transform_response(&engine, &mut ctx, &bytes),
             Protocol::OpenAiResponses => {
-                openai_responses::transform_response(&st.engine, &mut ctx, &bytes)
+                openai_responses::transform_response(&engine, &mut ctx, &bytes)
             }
         }
     } else {
@@ -644,6 +738,14 @@ async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(why) = st.readiness() {
+        return err_response(
+            503,
+            "api_error",
+            &format!("Aegis: {why}; запросы остановлены (fail-closed)"),
+        );
+    }
+    let engine = st.engine.load_full();
     let principal = match authenticate(&headers, &st) {
         Ok(p) => p,
         Err(r) => return *r,
@@ -655,8 +757,9 @@ async fn count_tokens(
             .get("x-aegis-conversation")
             .and_then(|v| v.to_str().ok()),
         request_id: &rid,
+        route: Protocol::Anthropic.route(),
     };
-    let (new_body, ctx) = match transform_request(&st.engine, &meta, &body) {
+    let (new_body, ctx) = match transform_request(&engine, &meta, &body) {
         Ok(x) => x,
         Err(rej) => {
             return Response::builder()

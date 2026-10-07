@@ -43,6 +43,7 @@ pub struct ReqMeta<'a> {
     pub principal: &'a str,
     pub conversation: Option<&'a str>,
     pub request_id: &'a str,
+    pub route: &'a str,
 }
 
 const SERVER_TOOL_PREFIXES: &[&str] = &[
@@ -354,6 +355,7 @@ pub fn transform_request(
         classes: HashSet::new(),
         stats: Stats::default(),
         request_id: meta.request_id.to_string(),
+        route: meta.route.to_string(),
         conversation_hash: engine.keys.k_audit.mac(&[b"conv", &salt_bytes])[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -487,6 +489,7 @@ mod tests {
             principal: "u:ivanov",
             conversation: Some("conv-1"),
             request_id: "req-1",
+            route: "test",
         }
     }
 

@@ -34,7 +34,11 @@ pub struct ServerConfig {
     pub employees: Vec<Employee>,
     #[serde(default)]
     pub terms: Vec<Term>,
+    #[serde(default)]
     pub virtual_keys: Vec<VirtualKey>,
+    /// Signed policy bundle (CFG-01). When set, policy, dictionaries and virtual keys come from it.
+    #[serde(default)]
+    pub bundle: Option<BundleConf>,
     /// JSONL audit file; stdout when absent (AUD-04).
     #[serde(default)]
     pub audit_path: Option<String>,
@@ -43,6 +47,24 @@ pub struct ServerConfig {
     pub audit_required: bool,
     #[serde(default = "d_queue")]
     pub audit_queue: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BundleConf {
+    /// File path or http(s) URL.
+    pub source: String,
+    /// Local copy of the last valid bundle (CFG-06).
+    #[serde(default)]
+    pub cache_path: Option<String>,
+    /// Hex ed25519 public keys that may sign bundles.
+    pub trusted_keys: Vec<String>,
+    /// Poll interval; at most 30 seconds so that a new version is applied in time (CFG-02).
+    #[serde(default = "d_reload")]
+    pub reload_seconds: u64,
+}
+
+fn d_reload() -> u64 {
+    15
 }
 
 fn d_queue() -> usize {
@@ -182,6 +204,19 @@ impl ServerConfig {
             };
             dict.add_term(&t.form, ty);
         }
+        if let Some(b) = &self.bundle {
+            if b.trusted_keys.is_empty() {
+                return Err(ConfigError::Invalid(
+                    "bundle.trusted_keys must not be empty".into(),
+                ));
+            }
+            if !(1..=30).contains(&b.reload_seconds) {
+                return Err(ConfigError::Invalid(
+                    "bundle.reload_seconds must be 1..=30".into(),
+                ));
+            }
+            crate::bundle_loader::parse_trusted(&b.trusted_keys).map_err(ConfigError::Invalid)?;
+        }
         let keys = TenantKeys::from_secrets(&self.tenant, k_t, k_audit);
         let engine = Engine::new(keys, detect, dict);
         let vk: HashMap<String, Principal> = self
@@ -214,6 +249,7 @@ impl ServerConfig {
             vk,
         );
         st.openai = openai;
+        st.bundle_required = self.bundle.is_some();
         Ok(st)
     }
 }
@@ -237,7 +273,7 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:8080");
         let st = c.build(&[1; 32], &[2; 32], "pk".into(), None).unwrap();
         assert!(
-            st.keys.contains_key("ab12"),
+            st.keys.load().contains_key("ab12"),
             "hashes are matched case-insensitively"
         );
     }
@@ -252,6 +288,51 @@ mod tests {
         assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
         let bad: ServerConfig = serde_json::from_str(&CFG.replace("SYSTEM", "NOPE")).unwrap();
         assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
+    }
+
+    // REQ: CFG-02 — a bundle configuration is validated before start.
+    #[test]
+    fn bundle_section_is_validated() {
+        let with = |extra: &str| -> ServerConfig {
+            serde_json::from_str(
+                &CFG.replace("\"virtual_keys\"", &format!("{extra} \"virtual_keys\"")),
+            )
+            .unwrap()
+        };
+        let hex = "00".repeat(32);
+        let ok = with(&format!(
+            "\"bundle\": {{\"source\": \"/etc/aegis/bundle.json\", \"trusted_keys\": [\"{}\"]}},",
+            ValidKey::hex()
+        ));
+        let _ = &hex;
+        let st = ok.build(&[1; 32], &[2; 32], "pk".into(), None).unwrap();
+        assert!(
+            st.bundle_required,
+            "a configured bundle makes its absence fail-closed"
+        );
+        assert!(
+            with("\"bundle\": {\"source\": \"x\", \"trusted_keys\": []},")
+                .build(&[1; 32], &[2; 32], "pk".into(), None)
+                .is_err()
+        );
+        assert!(with(&format!("\"bundle\": {{\"source\": \"x\", \"trusted_keys\": [\"{}\"], \"reload_seconds\": 60}},", ValidKey::hex())).build(&[1; 32], &[2; 32], "pk".into(), None).is_err(), "reload slower than 30 s");
+        assert!(
+            with("\"bundle\": {\"source\": \"x\", \"trusted_keys\": [\"nothex\"]},")
+                .build(&[1; 32], &[2; 32], "pk".into(), None)
+                .is_err()
+        );
+    }
+
+    struct ValidKey;
+    impl ValidKey {
+        fn hex() -> String {
+            ed25519_dalek::SigningKey::from_bytes(&[5; 32])
+                .verifying_key()
+                .to_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        }
     }
 
     #[test]

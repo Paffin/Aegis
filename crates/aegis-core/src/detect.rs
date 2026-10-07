@@ -11,7 +11,7 @@ pub const DETECTOR_VERSION: u32 = 1;
 
 /// Interface shared by all detectors (T0-02).
 pub trait Detector: Send + Sync {
-    fn id(&self) -> &'static str;
+    fn id(&self) -> &str;
     fn version(&self) -> u32 {
         DETECTOR_VERSION
     }
@@ -200,7 +200,7 @@ impl SecretDetector {
 }
 
 impl Detector for SecretDetector {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "secret.l0"
     }
 
@@ -339,7 +339,7 @@ const DB_SCHEMES: &[&str] = &[
 ];
 
 impl Detector for InfraDetector {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "infra.l0"
     }
 
@@ -627,7 +627,7 @@ pub fn inn_ok(s: &str) -> bool {
 }
 
 impl Detector for PiiDetector {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "pii.l0"
     }
 
@@ -989,7 +989,7 @@ fn lower_with_map(text: &str) -> (String, Vec<usize>) {
 }
 
 impl Detector for DictionaryDetector {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "dict.l0"
     }
 
@@ -1010,6 +1010,54 @@ impl Detector for DictionaryDetector {
                 c.entity.person_key = Some(entry.key.clone());
             }
             out.push(c);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Company detectors from the bundle (DET-08)
+// ---------------------------------------------------------------------------
+
+/// A regex detector defined by the company. `regex` is the `regex` crate, which guarantees
+/// linear time (SEC-11); `group` selects the capture group that holds the value.
+pub struct CustomDetector {
+    id: String,
+    ty: EntityType,
+    kind: Option<&'static str>,
+    re: Regex,
+    group: usize,
+}
+
+impl CustomDetector {
+    pub fn new(id: &str, ty: EntityType, regex: &str, group: usize) -> Result<Self, String> {
+        let re = regex::RegexBuilder::new(regex)
+            .size_limit(1 << 20)
+            .build()
+            .map_err(|e| format!("detector {id}: {e}"))?;
+        if group >= re.captures_len() {
+            return Err(format!("detector {id}: group {group} does not exist"));
+        }
+        let kind = (ty == EntityType::Secret).then_some("custom");
+        Ok(Self {
+            id: id.to_string(),
+            ty,
+            kind,
+            re,
+            group,
+        })
+    }
+}
+
+impl Detector for CustomDetector {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn scan(&self, text: &str, out: &mut Vec<Candidate>) {
+        for c in self.re.captures_iter(text) {
+            if let Some(m) = c.get(self.group) {
+                out.push(cand(m.start(), m.end(), self.ty, self.kind, "custom", 85));
+            }
         }
     }
 }

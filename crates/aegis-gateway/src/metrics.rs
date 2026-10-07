@@ -24,6 +24,7 @@ pub struct Metrics {
 #[derive(Default)]
 struct Inner {
     counters: BTreeMap<String, u64>,
+    gauges: BTreeMap<String, f64>,
     hists: BTreeMap<String, Hist>,
 }
 
@@ -58,6 +59,15 @@ impl Metrics {
         }
     }
 
+    pub fn set_gauge(&self, name: &str, labels: &[(&str, &str)], v: f64) {
+        if let Ok(mut i) = self.inner.lock() {
+            // a gauge with a changing label (bundle version) keeps only the current series
+            let prefix = format!("{name}{{");
+            i.gauges.retain(|k, _| !k.starts_with(&prefix) && k != name);
+            i.gauges.insert(key(name, labels), v);
+        }
+    }
+
     pub fn observe_ms(&self, name: &str, labels: &[(&str, &str)], ms: f64) {
         if let Ok(mut i) = self.inner.lock() {
             let h = i.hists.entry(key(name, labels)).or_default();
@@ -75,6 +85,9 @@ impl Metrics {
         let mut out = String::new();
         let Ok(i) = self.inner.lock() else { return out };
         for (k, v) in &i.counters {
+            let _ = writeln!(out, "{k} {v}");
+        }
+        for (k, v) in &i.gauges {
             let _ = writeln!(out, "{k} {v}");
         }
         for (k, h) in &i.hists {

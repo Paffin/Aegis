@@ -1,5 +1,6 @@
 //! `aegis-gateway` binary. REQ: NFR-06, NFR-09, SEC-06, CFG-05, SEC-02.
 
+use aegis_gateway::bundle_loader::{parse_trusted, Loader, Secrets, Source};
 use aegis_gateway::config::{secret, ServerConfig};
 use aegis_gateway::server::{admin_app, app};
 use std::sync::Arc;
@@ -39,6 +40,28 @@ async fn main() {
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
     let state = Arc::new(state);
+
+    // CFG-01, CFG-02, CFG-06: the signed bundle supplies policy, dictionaries and virtual keys.
+    if let Some(b) = &cfg.bundle {
+        let loader = Arc::new(Loader {
+            source: Source::parse(&b.source),
+            cache: b.cache_path.as_ref().map(std::path::PathBuf::from),
+            trusted: parse_trusted(&b.trusted_keys).unwrap_or_else(|e| fail(e)),
+            secrets: Secrets {
+                k_t: k_t.clone(),
+                k_audit: k_audit.clone(),
+            },
+            interval: Duration::from_secs(b.reload_seconds),
+        });
+        let mut last = None;
+        match loader.load_once(&state, &mut last).await {
+            Ok(Some(v)) => tracing::info!(version = %v, "bundle loaded"),
+            Ok(None) => {}
+            // Without a valid bundle the gateway serves 503 and keeps retrying (NFR-09).
+            Err(e) => tracing::error!(error = %e, "no valid bundle yet; requests are refused"),
+        }
+        tokio::spawn(loader.watch(state.clone(), last));
+    }
 
     let main_l = tokio::net::TcpListener::bind(&cfg.listen)
         .await

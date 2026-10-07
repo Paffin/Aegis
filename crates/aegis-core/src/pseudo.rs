@@ -99,6 +99,10 @@ impl Mapping {
 pub struct PseudoConfig {
     /// Show `len=` for secrets (ДОП-5; off by default).
     pub secret_len: bool,
+    /// Show `kind=` of a secret (default on).
+    pub secret_kind: bool,
+    /// Show `has=` of a secret (default on).
+    pub secret_has: bool,
     pub roles: Vec<String>,
     pub envs: Vec<String>,
 }
@@ -108,6 +112,8 @@ impl Default for PseudoConfig {
         let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
         Self {
             secret_len: false,
+            secret_kind: true,
+            secret_has: true,
             roles: v(&[
                 "mysql", "mssql", "oracle", "postgres", "rabbit", "kafka", "redis", "vault",
                 "ldap", "mail", "proxy", "pg", "db", "mq", "es", "app", "web", "api", "gw", "lb",
@@ -318,10 +324,10 @@ impl<'a> Pseudonymizer<'a> {
             EntityType::Host => self.pseudo_host(&c),
             EntityType::Secret => {
                 let mut attrs = vec![];
-                if let Some(k) = e.kind {
+                if let (Some(k), true) = (e.kind, self.cfg.secret_kind) {
                     attrs.push(("kind", k.to_string()));
                 }
-                if let Some(h) = has_attr(value) {
+                if let (Some(h), true) = (has_attr(value), self.cfg.secret_has) {
                     attrs.push(("has", h));
                 }
                 if self.cfg.secret_len {

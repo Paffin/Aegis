@@ -7,6 +7,7 @@ pub mod bundle_loader;
 pub mod common;
 pub mod config;
 pub mod engine;
+pub mod harden;
 pub mod json;
 pub mod metrics;
 pub mod openai_chat;

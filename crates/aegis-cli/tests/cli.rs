@@ -270,3 +270,52 @@ fn build_stops_on_any_failure() {
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("без тестов"));
 }
+
+// REQ: AUD-05 — report by period and by conversation, from an audit file without values.
+#[test]
+fn report_summarises_audit_without_values() {
+    let d = Dir::new("report");
+    let ev = |ts: &str, conv: &str, secret: u32, deny: bool| {
+        serde_json::json!({
+            "ts": ts, "request_id": "r", "tenant": "t", "principal": "u:ivanov", "client": "claude-code", "route": "x", "model": "m",
+            "conversation": conv, "bundle_version": "v1", "decision": "allow",
+            "sizes": {"request_bytes": 1, "blocks": 10, "blocks_scanned": 2},
+            "latency_ms": {}, "entities": [{"type": "SECRET", "kind": "password", "audit_hash": "7b21e09c4f1a2d3b", "count": secret, "action": "mask", "rule": "default"},
+                                           {"type": "HOST", "audit_hash": "4c1e88a0b2d14f90", "count": 3, "action": "mask", "rule": "default"}],
+            "trifecta": {"private": true, "untrusted": deny, "mode": "enforce"},
+            "sinks": if deny { vec![serde_json::json!({"tool": "Bash", "sink": "shell_network", "decision": "deny", "rule": "R-112", "classes": ["SECRET"]})] } else { vec![] }
+        })
+        .to_string()
+    };
+    let lines = [
+        ev("2026-10-07T10:00:00.000Z", "aaaa", 1, false),
+        ev("2026-10-07T11:00:00.000Z", "aaaa", 1, true),
+        ev("2026-10-08T09:00:00.000Z", "bbbb", 2, false),
+    ]
+    .join("\n")
+        + "\nnot json\n";
+    let f = d.write("audit.jsonl", &lines);
+
+    let all = aegis(&["report", &f]);
+    let out = ok(&all);
+    assert!(out.contains("запросов: 3"), "{out}");
+    assert!(out.contains("SECRET=4") && out.contains("HOST=9"), "{out}");
+    assert!(out.contains("R-112 (Bash → shell_network)=1"), "{out}");
+    assert!(out.contains("приватными данными и недоверенным контентом: 1"));
+    assert!(
+        out.contains("SECRET 7b21e09c4f1a2d3b: 4"),
+        "values seen repeatedly are reported by hash"
+    );
+    assert!(String::from_utf8_lossy(&all.stderr).contains("не удалось разобрать: 1"));
+
+    let one = ok(&aegis(&["report", &f, "--conversation", "aaaa"]));
+    assert!(
+        one.contains("запросов: 2 (разговор aaaa)") && one.contains("SECRET=2"),
+        "{one}"
+    );
+    let day = ok(&aegis(&["report", &f, "--since", "2026-10-08T00:00:00Z"]));
+    assert!(day.contains("запросов: 1"), "{day}");
+    let none = ok(&aegis(&["report", &f, "--until", "2026-10-07T10:30:00Z"]));
+    assert!(none.contains("запросов: 1"), "{none}");
+    assert!(err(&aegis(&["report", &f, "--since", "yesterday"])).contains("YYYY-MM-DD"));
+}

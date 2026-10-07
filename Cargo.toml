@@ -29,6 +29,7 @@ ed25519-dalek = "2"
 base64 = "0.22"
 arc-swap = "1"
 getrandom = "0.2"
+rustix = { version = "0.38", features = ["process"] }
 clap = { version = "4", features = ["derive"] }
 aegis-core = { path = "crates/aegis-core" }
 

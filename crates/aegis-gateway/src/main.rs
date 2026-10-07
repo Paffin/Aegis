@@ -14,10 +14,21 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 
 #[tokio::main]
 async fn main() {
+    // SEC-02: before any request data exists in memory
+    let h = aegis_gateway::harden::apply();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .json()
         .init();
+    if h.core_dumps_disabled && h.non_dumpable {
+        tracing::info!("process hardened: core dumps off, not dumpable");
+    } else {
+        tracing::warn!(
+            core_dumps_disabled = h.core_dumps_disabled,
+            non_dumpable = h.non_dumpable,
+            "process hardening incomplete; disable core dumps in the service manager"
+        );
+    }
     let path = std::env::args()
         .nth(1)
         .or_else(|| std::env::var("AEGIS_CONFIG").ok())

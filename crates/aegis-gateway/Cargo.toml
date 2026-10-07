@@ -21,6 +21,9 @@ arc-swap.workspace = true
 ed25519-dalek.workspace = true
 base64.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 tracing-subscriber.workspace = true
 tracing.workspace = true

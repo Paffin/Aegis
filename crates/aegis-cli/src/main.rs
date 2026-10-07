@@ -37,6 +37,19 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PolicyCmd,
     },
+    /// Summary of an audit file: a period, or one agent task (AUD-05).
+    Report {
+        /// JSONL audit file written by the gateway.
+        audit: PathBuf,
+        /// Only this conversation (the `conversation` hash from the audit).
+        #[arg(long)]
+        conversation: Option<String>,
+        /// Only events at or after this time, `YYYY-MM-DDTHH:MM:SSZ`.
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+    },
     /// Virtual keys for clients.
     Vkey {
         #[command(subcommand)]
@@ -348,6 +361,17 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Cmd::Report {
+            audit,
+            conversation,
+            since,
+            until,
+        } => report(
+            &audit,
+            conversation.as_deref(),
+            since.as_deref(),
+            until.as_deref(),
+        ),
         Cmd::Vkey {
             cmd: VkeyCmd::Hash { key },
         } => {
@@ -417,6 +441,130 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// AUD-05: counts only; the audit holds no values and neither does the report.
+fn report(
+    path: &Path,
+    conversation: Option<&str>,
+    since: Option<&str>,
+    until: Option<&str>,
+) -> Result<(), String> {
+    use std::collections::BTreeMap;
+    let text = read(path)?;
+    let (lo, hi) = (since.map(bundle::parse_utc), until.map(bundle::parse_utc));
+    if lo == Some(None) || hi == Some(None) {
+        return Err("время: ожидается YYYY-MM-DDTHH:MM:SSZ".into());
+    }
+    let (lo, hi) = (lo.flatten(), hi.flatten());
+    let mut n = 0u64;
+    let mut decisions: BTreeMap<String, u64> = BTreeMap::new();
+    let mut entities: BTreeMap<String, u64> = BTreeMap::new();
+    let mut hashes: BTreeMap<(String, String), u64> = BTreeMap::new();
+    let mut denied: BTreeMap<String, u64> = BTreeMap::new();
+    let mut clients: BTreeMap<String, u64> = BTreeMap::new();
+    let mut principals: BTreeMap<String, u64> = BTreeMap::new();
+    let mut trifecta = 0u64;
+    let (mut blocks, mut scanned) = (0u64, 0u64);
+    let mut bad_lines = 0;
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            bad_lines += 1;
+            continue;
+        };
+        if let Some(c) = conversation {
+            if v["conversation"].as_str() != Some(c) {
+                continue;
+            }
+        }
+        let ts = v["ts"].as_str().and_then(bundle::parse_utc);
+        if lo.is_some_and(|l| ts.is_none_or(|t| t < l))
+            || hi.is_some_and(|h| ts.is_none_or(|t| t >= h))
+        {
+            continue;
+        }
+        n += 1;
+        *decisions
+            .entry(v["decision"].as_str().unwrap_or("?").into())
+            .or_default() += 1;
+        *clients
+            .entry(v["client"].as_str().unwrap_or("?").into())
+            .or_default() += 1;
+        *principals
+            .entry(v["principal"].as_str().unwrap_or("?").into())
+            .or_default() += 1;
+        blocks += v["sizes"]["blocks"].as_u64().unwrap_or(0);
+        scanned += v["sizes"]["blocks_scanned"].as_u64().unwrap_or(0);
+        for e in v["entities"].as_array().into_iter().flatten() {
+            let ty = e["type"].as_str().unwrap_or("?").to_string();
+            let c = e["count"].as_u64().unwrap_or(0);
+            *entities.entry(ty.clone()).or_default() += c;
+            *hashes
+                .entry((ty, e["audit_hash"].as_str().unwrap_or("?").into()))
+                .or_default() += c;
+        }
+        for s in v["sinks"].as_array().into_iter().flatten() {
+            if s["decision"] == "deny" {
+                let key = format!(
+                    "{} ({} → {})",
+                    s["rule"].as_str().unwrap_or("?"),
+                    s["tool"].as_str().unwrap_or("?"),
+                    s["sink"].as_str().unwrap_or("?")
+                );
+                *denied.entry(key).or_default() += 1;
+            }
+        }
+        if v["trifecta"]["private"] == true && v["trifecta"]["untrusted"] == true {
+            trifecta += 1;
+        }
+    }
+    let list = |m: &BTreeMap<String, u64>| {
+        m.iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    println!(
+        "запросов: {n}{}",
+        conversation
+            .map(|c| format!(" (разговор {c})"))
+            .unwrap_or_default()
+    );
+    println!("решения: {}", list(&decisions));
+    println!(
+        "замаскировано сущностей: {}",
+        if entities.is_empty() {
+            "0".into()
+        } else {
+            list(&entities)
+        }
+    );
+    println!("блоков: {blocks}, просканировано заново: {scanned}");
+    println!("клиенты: {}", list(&clients));
+    if conversation.is_none() {
+        println!("пользователи: {}", list(&principals));
+    }
+    println!(
+        "запрещённых вызовов инструментов: {}",
+        if denied.is_empty() {
+            "0".into()
+        } else {
+            list(&denied)
+        }
+    );
+    println!("запросов с приватными данными и недоверенным контентом: {trifecta}");
+    let mut repeated: Vec<_> = hashes.iter().filter(|(_, c)| **c > 1).collect();
+    repeated.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    if !repeated.is_empty() {
+        println!("значения, которые встречались повторно (хеш, без значений):");
+        for ((ty, h), c) in repeated.iter().take(10) {
+            println!("  {ty} {h}: {c}");
+        }
+    }
+    if bad_lines > 0 {
+        eprintln!("предупреждение: строк, которые не удалось разобрать: {bad_lines}");
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {

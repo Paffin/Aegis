@@ -81,6 +81,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aegis-guard"
+version = "0.1.0"
+dependencies = [
+ "aegis-core",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "aegis-mcp"
 version = "0.1.0"
 dependencies = [

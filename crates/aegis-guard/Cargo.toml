@@ -1,0 +1,24 @@
+[package]
+name = "aegis-guard"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+name = "aegis_guard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aegis-guard"
+path = "src/main.rs"
+
+[dependencies]
+aegis-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+regex.workspace = true
+
+[lints]
+workspace = true

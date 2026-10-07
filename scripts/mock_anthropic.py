@@ -8,6 +8,8 @@ With TOOLMODE=1 the answer to a request that offers tools depends on the first u
 * default: a text block and two Bash tool_use blocks, one that prints the host pseudonym it saw and
   one that sends the secret marker it saw to an external address (that one must never reach the
   client); the next turn is a final text.
+* the message contains GUARD: the agent reads MOCK_DIR/home/.ssh/id_x and MOCK_DIR/work/ok.txt (for the
+  checks of aegis-guard, which runs before the client executes a tool); then a final text.
 * the message contains FILES: the agent reads MOCK_DIR/config.env, then edits that file (the old
   and the new text carry the secret marker: allowed, the secret came from this file) and another
   file, MOCK_DIR/other.env, with the secret marker in the new text (must be refused); then a final
@@ -55,6 +57,14 @@ def plan(req):
     host = (re.findall(HOST_RE, allmsg) or ["?"])[0]
     sec = (re.findall(SECRET_RE, allmsg) or ["?"])[0]
     results = last_tool_results(req)
+    if "GUARD" in first_user_text(req):
+        d = os.environ.get("MOCK_DIR", ".")
+        if results is None:
+            return "Читаю файлы", [
+                ("toolu_01S", "Read", {"file_path": f"{d}/home/.ssh/id_x"}),
+                ("toolu_01T", "Read", {"file_path": f"{d}/work/ok.txt"}),
+            ]
+        return None
     if "FILES" in first_user_text(req):
         d = os.environ.get("MOCK_DIR", ".")
         if results is None:

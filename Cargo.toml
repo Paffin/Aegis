@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = ["crates/aegis-core", "crates/aegis-gateway", "crates/aegis-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+hmac = "0.12"
+sha2 = "0.10"
+regex = "1"
+aho-corasick = "1"
+thiserror = "1"
+zeroize = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+futures-util = "0.3"
+bytes = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+aegis-core = { path = "crates/aegis-core" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+print_stdout = "warn"
+unwrap_used = "warn"

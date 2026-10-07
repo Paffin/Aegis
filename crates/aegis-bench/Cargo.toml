@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 aegis-core.workspace = true
+aegis-gateway = { path = "../aegis-gateway" }
+serde_json.workspace = true
 clap.workspace = true
 
 [lints]

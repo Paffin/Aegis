@@ -25,6 +25,26 @@ pub struct Engine {
     pub trifecta: TrifectaConfig,
     pub ingress: IngressPolicy,
     cache: Mutex<DetectCache>,
+    /// SHA-256 state after tenant and detector version; cloned per block (DET-02 cache key).
+    hash_prefix: Sha256,
+}
+
+fn hash_prefix(tenant: &str, p: &Pipeline) -> Sha256 {
+    let mut h = Sha256::new();
+    h.update(tenant.as_bytes());
+    h.update([0]);
+    h.update(p.version_tag().as_bytes());
+    h.update([0]);
+    h
+}
+
+/// Result of scanning one block.
+pub struct Scanned {
+    pub entities: Vec<Entity>,
+    /// The block contains something shaped like an Aegis pseudonym (PSE-11).
+    pub grammar: bool,
+    /// Served from the detection cache.
+    pub hit: bool,
 }
 
 impl Engine {
@@ -35,6 +55,7 @@ impl Engine {
     ) -> Self {
         let pipeline = Pipeline::new(detect_cfg.clone(), dict);
         Self {
+            hash_prefix: hash_prefix(&keys.tenant, &pipeline),
             keys,
             pipeline,
             detect_cfg,
@@ -53,6 +74,7 @@ impl Engine {
             pipeline.add_detector(Box::new(d));
         }
         Self {
+            hash_prefix: hash_prefix(&keys.tenant, &pipeline),
             keys,
             pipeline,
             detect_cfg: c.detect,
@@ -66,16 +88,16 @@ impl Engine {
 
     /// Detection with a cache keyed by (tenant, block hash, detector version) (DET-02).
     /// The cache keeps positions and types only; the person key is stored hashed.
-    pub fn scan(&self, text: &str) -> (Vec<Entity>, bool) {
-        let mut h = Sha256::new();
-        h.update(self.keys.tenant.as_bytes());
-        h.update([0]);
-        h.update(self.pipeline.version_tag().as_bytes());
-        h.update([0]);
+    pub fn scan(&self, text: &str) -> Scanned {
+        let mut h = self.hash_prefix.clone();
         h.update(text.as_bytes());
         let key: [u8; 32] = h.finalize().into();
-        if let Some(hit) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
-            return (hit, true);
+        if let Some((entities, grammar)) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
+            return Scanned {
+                entities,
+                grammar,
+                hit: true,
+            };
         }
         let mut ents = self.pipeline.scan(text);
         for e in &mut ents {
@@ -84,10 +106,15 @@ impl Engine {
                 e.person_key = Some(d[..8].iter().map(|b| format!("{b:02x}")).collect());
             }
         }
+        let grammar = aegis_core::pseudo::has_aegis_grammar(text);
         if let Ok(mut c) = self.cache.lock() {
-            c.put(key, ents.clone());
+            c.put(key, (ents.clone(), grammar));
         }
-        (ents, false)
+        Scanned {
+            entities: ents,
+            grammar,
+            hit: false,
+        }
     }
 
     pub fn cache_len(&self) -> usize {
@@ -99,7 +126,7 @@ impl Engine {
 struct DetectCache {
     cap: usize,
     tick: u64,
-    map: HashMap<[u8; 32], (Vec<Entity>, u64)>,
+    map: HashMap<[u8; 32], ((Vec<Entity>, bool), u64)>,
 }
 
 impl DetectCache {
@@ -110,7 +137,7 @@ impl DetectCache {
             map: HashMap::new(),
         }
     }
-    fn get(&mut self, k: &[u8; 32]) -> Option<Vec<Entity>> {
+    fn get(&mut self, k: &[u8; 32]) -> Option<(Vec<Entity>, bool)> {
         self.tick += 1;
         let t = self.tick;
         self.map.get_mut(k).map(|(v, tick)| {
@@ -118,7 +145,7 @@ impl DetectCache {
             v.clone()
         })
     }
-    fn put(&mut self, k: [u8; 32], v: Vec<Entity>) {
+    fn put(&mut self, k: [u8; 32], v: (Vec<Entity>, bool)) {
         self.tick += 1;
         if self.map.len() >= self.cap {
             let mut ticks: Vec<u64> = self.map.values().map(|(_, t)| *t).collect();
@@ -244,10 +271,16 @@ pub fn process_blocks(
     };
     let mut kept: Vec<Vec<Entity>> = Vec::with_capacity(blocks.len());
     let mut dropped = vec![false; blocks.len()];
+    let mut has_grammar: Vec<bool> = Vec::with_capacity(blocks.len());
     for (i, b) in blocks.iter().enumerate() {
         ctx.stats.blocks_total += 1;
         let t_scan = std::time::Instant::now();
-        let (ents, hit) = engine.scan(&b.text);
+        let Scanned {
+            entities: ents,
+            grammar,
+            hit,
+        } = engine.scan(&b.text);
+        has_grammar.push(grammar);
         *ctx.stats.timings_ms.entry("detect").or_insert(0.0) +=
             t_scan.elapsed().as_secs_f64() * 1000.0;
         if !hit {
@@ -283,7 +316,7 @@ pub fn process_blocks(
         let out = if dropped[i] {
             "[Aegis: блок не проверен и удалён]".to_string()
         } else {
-            p.render(&b.text, ents, &mut ctx.mapping)
+            p.render_opt(&b.text, ents, &mut ctx.mapping, has_grammar[i])
         };
         let out = if b.is_system {
             format!("{NOTICE}\n\n{out}")

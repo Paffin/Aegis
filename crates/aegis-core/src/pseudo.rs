@@ -145,6 +145,19 @@ fn grammar() -> &'static Regex {
     })
 }
 
+/// Does the text contain anything that looks like an Aegis pseudonym (PSE-11)?
+pub fn has_aegis_grammar(text: &str) -> bool {
+    // cheap filters first: every alternative of the grammar contains one of these
+    let b = text.as_bytes();
+    let maybe = text.contains("[[")
+        || text.contains("aegis.invalid")
+        || b.windows(5)
+            .any(|w| w[..4].eq_ignore_ascii_case(b"3fff") && w[4] == b':')
+        || b.windows(3)
+            .any(|w| w[0] == b'2' && matches!(w[1], b'4' | b'5') && w[2].is_ascii_digit());
+    maybe && grammar().is_match(text)
+}
+
 pub fn marker_grammar() -> &'static Regex {
     grammar()
 }
@@ -372,16 +385,39 @@ impl<'a> Pseudonymizer<'a> {
 
     /// Phase 2: replace entities and escape foreign Aegis-looking strings (PSE-11).
     pub fn render(&self, text: &str, entities: &[Entity], mapping: &mut Mapping) -> String {
+        self.render_opt(text, entities, mapping, has_aegis_grammar(text))
+    }
+
+    /// Like [`render`](Self::render) with the grammar check done by the caller, who caches it with
+    /// the detection result: a block that was seen before is not scanned again on every turn.
+    pub fn render_opt(
+        &self,
+        text: &str,
+        entities: &[Entity],
+        mapping: &mut Mapping,
+        has_grammar: bool,
+    ) -> String {
+        if entities.is_empty() && !has_grammar {
+            return text.to_string();
+        }
         let mut out = String::with_capacity(text.len());
         let mut cursor = 0;
         for e in entities {
-            self.escape_into(&text[cursor..e.span.start], mapping, &mut out);
+            self.escape_seg(&text[cursor..e.span.start], mapping, &mut out, has_grammar);
             let (_, p) = self.pseudonym(e, &text[e.span.start..e.span.end]);
             out.push_str(&p);
             cursor = e.span.end;
         }
-        self.escape_into(&text[cursor..], mapping, &mut out);
+        self.escape_seg(&text[cursor..], mapping, &mut out, has_grammar);
         out
+    }
+
+    fn escape_seg(&self, seg: &str, mapping: &mut Mapping, out: &mut String, has_grammar: bool) {
+        if has_grammar {
+            self.escape_into(seg, mapping, out);
+        } else {
+            out.push_str(seg);
+        }
     }
 
     fn escape_into(&self, seg: &str, mapping: &mut Mapping, out: &mut String) {

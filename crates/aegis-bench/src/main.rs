@@ -4,6 +4,7 @@
 //! `fp` scans a directory of ordinary open-source code and counts detections. Everything found
 //! in such code is a false positive by construction, so the rate per 10 000 lines is the metric.
 
+mod perf;
 mod recall;
 use aegis_core::detect::{DetectConfig, Dictionary, Pipeline};
 use clap::{Parser, Subcommand};
@@ -18,6 +19,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Request transformation latency on a realistic long agent conversation (NFR-01..03).
+    Perf {
+        /// Approximate size of the conversation in KB of text (200k tokens is about 800 KB).
+        #[arg(long, default_value_t = 800)]
+        kb: usize,
+        #[arg(long, default_value_t = 30)]
+        iterations: usize,
+        #[arg(long)]
+        dir: PathBuf,
+        /// Fail if warm p95 exceeds this many milliseconds.
+        #[arg(long)]
+        max_warm_p95_ms: Option<f64>,
+    },
     /// Recall per type on a synthetic positive corpus.
     Recall {
         #[arg(long, default_value_t = 500)]
@@ -67,6 +81,12 @@ fn walk(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
 
 fn main() {
     let (dir, ext, samples, max_per_10k) = match Cli::parse().cmd {
+        Cmd::Perf {
+            kb,
+            iterations,
+            dir,
+            max_warm_p95_ms,
+        } => return perf::run(kb, iterations, &dir, max_warm_p95_ms),
         Cmd::Fp {
             dir,
             ext,

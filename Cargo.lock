@@ -7,7 +7,9 @@ name = "aegis-bench"
 version = "0.1.0"
 dependencies = [
  "aegis-core",
+ "aegis-gateway",
  "clap",
+ "serde_json",
 ]
 
 [[package]]

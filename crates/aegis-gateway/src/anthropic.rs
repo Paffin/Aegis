@@ -97,7 +97,7 @@ const SKIP_KEYS: &[&str] = &[
     "data",
 ];
 
-use crate::common::{blocked, tool_path};
+use crate::common::{blocked, origin_path};
 
 fn attachment_edit(edits: &mut Edits, block: &Node) {
     let repl =
@@ -157,7 +157,7 @@ pub fn transform_request(
                         let path = b
                             .get("input")
                             .and_then(|i| serde_json::from_slice::<Value>(i.raw(body)).ok())
-                            .and_then(|v| tool_path(&v));
+                            .and_then(|v| origin_path(&name, &v));
                         tool_uses.insert(id, (name, path));
                     }
                 }

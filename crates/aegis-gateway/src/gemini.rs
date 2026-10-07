@@ -6,7 +6,7 @@
 
 use crate::anthropic::{Reject, ReqMeta};
 use crate::common::{
-    bad_request, finish_request, restore_arguments, restore_text, tool_path, Draft,
+    bad_request, finish_request, restore_arguments, restore_text, Draft,
 };
 use crate::engine::{Blk, Engine, RequestCtx, ATTACHMENT_NOTICE, NOTICE};
 use crate::json::{self, Node};
@@ -151,7 +151,7 @@ pub fn transform_request(
             let path = fc
                 .get("args")
                 .and_then(|a| serde_json::from_slice::<Value>(a.raw(body)).ok())
-                .and_then(|v| tool_path(&v));
+                .and_then(|v| crate::common::origin_path(&name, &v));
             let key = fc.str_at("id", body).unwrap_or_else(|| name.clone());
             calls.insert(key, (name, path));
         }

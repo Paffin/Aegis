@@ -25,6 +25,7 @@ fn reason_text(reason: &str) -> &'static str {
         "trifecta" => "в контексте одновременно приватные данные и недоверенный контент",
         "malformed" => "аргументы вызова не удалось разобрать",
         "dangerous" => "опасная команда",
+        "conflict" => "вызов называет два разных файла или две разные команды: непонятно, что он делает",
         "response_secret" => "в аргументах вызова секрет, которого модели не передавали",
         _ => "запрещено политикой",
     }
@@ -75,6 +76,7 @@ pub fn tool_path(input: &Value) -> Option<String> {
     }
     [
         "file_path",
+        "filePath",
         "path",
         "notebook_path",
         "target_file",
@@ -86,10 +88,45 @@ pub fn tool_path(input: &Value) -> Option<String> {
     .find_map(|k| input.get(*k).and_then(|v| v.as_str()).map(String::from))
 }
 
+/// Keys that name the file a call acts on. A call that names two different files in these is
+/// refused: Aegis would judge one and the client act on the other.
+const PATH_KEYS: &[&str] = &["file_path", "filePath", "path", "absolute_path", "target_file", "notebook_path"];
+
+pub fn path_conflict(input: &Value) -> bool {
+    let Some(o) = input.as_object() else { return false };
+    let mut seen: Vec<&str> = vec![];
+    for k in PATH_KEYS {
+        if let Some(Value::String(s)) = o.get(*k) {
+            if !seen.contains(&s.trim()) {
+                seen.push(s.trim());
+            }
+        }
+    }
+    seen.len() > 1
+}
+
+/// Two command fields with different content: the same ambiguity for shell tools.
+fn command_conflict(input: &Value) -> bool {
+    let Some(o) = input.as_object() else { return false };
+    let present: Vec<&Value> = ["command", "cmd", "commands"].iter().filter_map(|k| o.get(*k)).collect();
+    present.len() > 1 && present.windows(2).any(|w| w[0] != w[1])
+}
+
+/// The file a tool call read, for the provenance of what the call returned (IR-02, RST-08). Only
+/// the tools that read files count, and only when the call names one file unambiguously: any other
+/// tool could carry a path in a field of its own and so choose the origin of a secret.
+pub fn origin_path(tool: &str, input: &Value) -> Option<String> {
+    if Sink::from_tool(tool) != Some(Sink::FileRead) || path_conflict(input) {
+        return None;
+    }
+    tool_path(input)
+}
+
 /// Paths named in a Codex `apply_patch` body (`*** Update File: path`).
 pub fn patch_paths(patch: &str) -> Vec<String> {
     patch
         .lines()
+        .map(str::trim_start)
         .filter_map(|l| {
             [
                 "*** Add File: ",
@@ -230,6 +267,17 @@ pub fn restore_tool_call(
         default_sink,
         &mut warned,
     );
+    let conflict = path_conflict(input) || (shell && command_conflict(input));
+    let early = if conflict {
+        Some(Denied {
+            rule: "conflict".into(),
+            sink: default_sink,
+            reason: "conflict".into(),
+            classes: vec![],
+        })
+    } else {
+        early
+    };
     let denied: std::cell::RefCell<Option<Denied>> = std::cell::RefCell::new(early);
     let check = |sink: Sink, text: &str, precleared: bool, ctx: &RequestCtx| -> String {
         let c = SinkContext {
@@ -283,10 +331,17 @@ pub fn restore_tool_call(
             .map(|(k, c)| (*k, matches!(c, Command::Text(_))));
         // (argv arrays and command lists are restored above, element by element)
         let mut visit = |key: &str, s: &mut String| {
+            // the environment of a command is data the command reads: nothing is restored into it
+            if shell && key == "env" {
+                return;
+            }
             let sink = match cmd_key {
                 Some((k, true)) if key == k => default_sink,
                 Some((k, false)) if key == k => return, // argv handled above
-                Some(_) => Sink::Text,
+                // every other field of a shell call is judged as the call is
+                Some(_) => default_sink,
+                // a `command` in a tool that is not a shell tool is run all the same
+                None if !shell && matches!(key, "command" | "cmd") => sink_for_command(s),
                 None => default_sink,
             };
             // elements of an argv array arrive with the array's key and were handled above

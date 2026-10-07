@@ -19,10 +19,11 @@
 - В CI: сборка образа, запуск его read-only без привилегий, `helm lint` и `helm template`.
 
 - `scripts/client-claude-files.sh`: сценарий из концепции с настоящим Claude Code (секрет возвращается в файл-источник, в другой файл не попадает).
-- `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
+- `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue, Cline, Hermes Agent, OpenClaw, Crush, Kilo Code, Pi, Goose, Copilot CLI и Mistral Vibe против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
 
 - **Этап 2:** `aegis-guard` — хук клиента на машине разработчика (`AGG-01`, `AGG-02`, `AGG-07`): закрытые файлы, опасные команды, список узлов, пути приводятся к виду файловой системы; проверен настоящим Claude Code (`scripts/client-claude-guard.sh`); `aegis-guard settings` печатает настройки клиента. Документ: [docs/GUARD.md](docs/GUARD.md).
+- **Новые клиенты** (`scripts/client-{hermes,openclaw,crush,kilo,pi,goose,copilot,vibe}.sh`, общая часть в `scripts/lib-client.sh`): Hermes Agent, OpenClaw, Crush, Kilo Code, Pi, Goose, GitHub Copilot CLI и Mistral Vibe проверены настоящими бинарниками. В классификацию инструментов добавлены `terminal`, `exec`, `file_write`, `create`, `view`, `browser_navigate`, `web_extract`, `delegate_task`, `sessions_spawn`, `subagents`. Goose отбрасывал текст после вызова инструмента: объяснение отказа в потоке Chat теперь стоит перед оставшимися вызовами.
 - Остатки разбора: `max_connections_per_ip`, `count_tokens` идёт по маршруту и с псевдонимами моделей, разрезание адреса проверено в потоках Chat, Responses и Gemini (все позиции разреза).
 - **Внутренний разбор безопасности** (отдельный проверяющий, не внешний пентест): 7 серьёзных и 6 средних находок, все воспроизведены и закрыты тестами (`tests/hardening.rs`, `tests/review_tools.rs`):
   - потоки: значение в URL, разрезанном границей кусков потока, оставалось подставленным (контекст прежних кусков теперь учитывается);

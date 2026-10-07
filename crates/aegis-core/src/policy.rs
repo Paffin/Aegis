@@ -55,6 +55,9 @@ impl Sink {
             | "str_replace_based_edit_tool"
             // Gemini CLI and Qwen Code, OpenCode, Continue, Cursor-style agents
             | "write_file"
+            // OpenClaw, GitHub Copilot CLI
+            | "file_write"
+            | "create"
             | "replace"
             | "write"
             | "edit"
@@ -65,13 +68,17 @@ impl Sink {
             "Read" | "Glob" | "Grep" | "NotebookRead" | "LS" | "read_file" | "list_files"
             | "search_files" | "list_dir" | "grep_search" | "read" | "glob" | "grep" | "list"
             | "read_many_files" | "list_directory" | "search_file_content" | "view_image"
-            | "List" | "Search" | "read_files" => Sink::FileRead,
+            | "List" | "Search" | "read_files"
+            // Crush
+            | "view" => Sink::FileRead,
             // the answer to the user, not an action: the same rules as for the text of a reply
             "submit_and_exit" | "attempt_completion" | "ask_followup_question"
             | "plan_mode_respond" => Sink::Text,
             "WebFetch" | "WebSearch" | "web_search" | "browser_action" | "web_fetch" | "webfetch"
-            | "google_web_search" | "Fetch" => Sink::Network,
-            "Task" | "task" => Sink::Agent,
+            | "google_web_search" | "Fetch"
+            // Hermes Agent
+            | "browser_navigate" | "web_extract" => Sink::Network,
+            "Task" | "task" | "delegate_task" | "sessions_spawn" | "subagents" => Sink::Agent,
             "use_mcp_tool" | "access_mcp_resource" => Sink::Mcp,
             t if t.starts_with("mcp__") || t.starts_with("mcp_") => Sink::Mcp,
             _ => Sink::Unknown,
@@ -103,6 +110,9 @@ pub fn is_shell_tool(tool: &str) -> bool {
             | "run_terminal_command"
             // Cline (`commands`: a list of commands)
             | "run_commands"
+            // Hermes Agent, OpenClaw
+            | "terminal"
+            | "exec"
     )
 }
 

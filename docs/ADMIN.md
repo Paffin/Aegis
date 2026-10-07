@@ -202,7 +202,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 |---|---|
 | `scripts/demo.sh` | Клиент, Aegis и «провайдер», который печатает полученное: что видит провайдер, что возвращается клиенту |
 | `scripts/smoke.sh` | Настоящие бинарники: бандл, ключи, горячая замена, повреждённый бандл, аудит без значений, SIGTERM во время потока |
-| `scripts/clients.sh` | Настоящие Claude Code, Codex, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (нужны Node.js и npm; Aider ставится через `uv`). Не установленный клиент пропускается |
+| `scripts/clients.sh` | Настоящие Claude Code, Codex, Qwen Code, Gemini CLI, OpenCode, Aider, Continue, Cline, Hermes Agent, OpenClaw, Crush, Kilo Code, Pi, Goose, Copilot CLI и Mistral Vibe против Aegis и подставного провайдера (нужны Node.js и npm; Aider ставится через `uv`). Не установленный клиент пропускается |
 | `scripts/client-claude-guard.sh` | Настоящий Claude Code с `aegis-guard` как хуком: чтение закрытого ключа остановлено до выполнения, обычный файл читается |
 | `scripts/client-claude-files.sh` | Сценарий из концепции с настоящим Claude Code: секрет возвращается в файл, откуда он прочитан, и не попадает в другой файл |
 | `scripts/supply-chain.sh` | Лицензии, запреты, уязвимости и источники зависимостей (`deny.toml`); в CI то же плюс SBOM |

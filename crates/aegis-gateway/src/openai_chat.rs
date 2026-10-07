@@ -623,11 +623,14 @@ impl<'e> ChatStreamTransformer<'e> {
                 }
                 let tools = std::mem::take(&mut st.tools);
                 let (mut removed, mut kept) = (st.removed, st.kept);
+                // The explanation of a refused call goes before the calls that remain: some clients
+                // (Goose) drop text that arrives after a tool call, and the model must be told.
+                let mut kept_calls: Vec<u8> = vec![];
                 for (ti, acc) in tools {
                     match restore_arguments(self.engine, &mut self.ctx, &acc.name, &acc.args) {
                         Ok(args) => {
                             kept = true;
-                            out.extend(chunk_like(&base, idx, json!({"tool_calls": [{"index": ti, "id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": args}}]}), Value::Null));
+                            kept_calls.extend(chunk_like(&base, idx, json!({"tool_calls": [{"index": ti, "id": acc.id, "type": "function", "function": {"name": acc.name, "arguments": args}}]}), Value::Null));
                         }
                         Err(text) => {
                             removed = true;
@@ -648,6 +651,7 @@ impl<'e> ChatStreamTransformer<'e> {
                         }
                     }
                 }
+                out.extend(kept_calls);
                 st.removed = removed;
                 st.kept = kept;
                 let fin = if removed && !kept && finish == "tool_calls" {

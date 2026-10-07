@@ -4,7 +4,7 @@
 
 Aegis принимает виртуальный ключ в любом из привычных мест: `x-api-key`, `Authorization: Bearer`, `api-key` (Azure-клиенты), `x-goog-api-key` и параметр `?key=` (Gemini). Заголовки клиента, кроме нужных протоколу (`anthropic-version`, `anthropic-beta`, `openai-beta`, `content-type`, `accept`, `user-agent`), провайдеру не передаются.
 
-> Важно. Названия переменных и настроек клиентов зависят от их версии: сверяйтесь с документацией клиента. Восемь клиентов проверены настоящими бинарниками против Aegis и **подставного провайдера** (см. ниже); остальные — только тестами на уровне формата запросов и ответов. Ни один не проверялся против настоящего провайдера: см. [STATUS.md](STATUS.md). Если у клиента что-то не работает, пришлите `X-Aegis-Request-Id` и текст ошибки.
+> Важно. Названия переменных и настроек клиентов зависят от их версии: сверяйтесь с документацией клиента. Шестнадцать клиентов проверены настоящими бинарниками против Aegis и **подставного провайдера** (см. ниже); остальные — только тестами на уровне формата запросов и ответов. Ни один не проверялся против настоящего провайдера: см. [STATUS.md](STATUS.md). Если у клиента что-то не работает, пришлите `X-Aegis-Request-Id` и текст ошибки.
 
 ## Проверено настоящими клиентами
 
@@ -20,6 +20,14 @@ Aegis принимает виртуальный ключ в любом из пр
 | Aider 0.86.2 | OpenAI Chat, поток | `OPENAI_API_BASE`, `OPENAI_API_KEY`, `--model openai/<имя>`. Вызовов инструментов нет: маскируются запрос и содержимое файлов, добавленных в чат |
 | Continue CLI 1.5.47 | OpenAI Chat, поток | `~/.continue/config.yaml`: модель с `provider: openai`, `apiBase`, `apiKey`; инструмент `Bash` |
 | Cline CLI 3.0.69 | OpenAI Chat, поток | `cline auth openai -k <ключ> -m <модель> -b <адрес>/v1`. Команды идут инструментом `run_commands` со списком `commands`, задачу завершает `submit_and_exit` |
+| Hermes Agent 0.19.0 | OpenAI Chat, поток | `~/.hermes/config.yaml`: `model.provider: custom`, `default`, `base_url`, `api_key`, `context_length`; запуск `hermes -z "…" --yolo`. Команды идут инструментом `terminal`, браузер — `browser_navigate`, код — `execute_code` (его Aegis считает неизвестным и не подставляет в него значения) |
+| OpenClaw 2026.6.35 | OpenAI Chat, поток | `~/.openclaw/openclaw.json`: `models.providers.<имя>` с `baseUrl`, `apiKey`, `api: "openai-completions"` и списком `models`; модель — в `agents.defaults.model.primary` (`имя/id`) и в `agents.defaults.models`; запуск `openclaw agent --local`. Команды идут инструментом `exec`, сообщения в каналы — `message` (Aegis считает его выходом в сеть) |
+| Crush 0.97.1 | OpenAI Chat, поток | `~/.config/crush/crush.json`: провайдер `type: "openai-compat"`, `base_url`, `api_key`, `models`; запуск `crush run`. Команды — `bash`, файлы — `view`, `edit`, `write`, `multiedit` |
+| Kilo Code CLI 7.8.8 | OpenAI Chat, поток | Как у OpenCode: `kilo.json` (или `opencode.json`) с `@ai-sdk/openai-compatible`; запуск `kilo run -m имя/модель` |
+| Pi 0.73.1 | OpenAI Chat, поток | `~/.pi/agent/models.json`: провайдер с `baseUrl`, `api: "openai-completions"`, `apiKey`, `models`; запуск `pi --provider … --model … -p` |
+| Goose 1.53.0 | OpenAI Chat, поток | `GOOSE_PROVIDER=openai`, `OPENAI_HOST=http://адрес`, `OPENAI_BASE_PATH=v1/chat/completions`, `OPENAI_API_KEY`, `GOOSE_MODEL`; запуск `goose run --with-builtin developer -t`. Клиент отбрасывает текст, пришедший после вызова инструмента, поэтому объяснение отказа Aegis в потоке стоит перед оставшимися вызовами |
+| GitHub Copilot CLI 1.0.93 | OpenAI Chat, поток | Режим «своя модель», вход в GitHub не нужен: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_TYPE=openai`, `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API=completions`, `COPILOT_MODEL`, `COPILOT_OFFLINE=true` (отключает телеметрию и обращения к GitHub) |
+| Mistral Vibe 2.26.0 | OpenAI Chat, поток | `~/.vibe/config.toml`: `[[providers]]` с `api_base`, `api_key_env_var`, `api_style = "openai"`, `backend = "generic"`, `[[models]]` и `active_model`; запуск `vibe --trust --auto-approve -p` |
 
 Для Claude Code есть и файловый сценарий (`scripts/client-claude-files.sh`, сценарий из концепции): клиент читает конфиг, модель правит этот файл с секретом в тексте правки и другой файл так же. Правка файла, откуда прочитан секрет, проходит, и на диске оказывается настоящий пароль без маркеров; правка другого файла отклонена, файл не изменился, а в истории её нет. (В режиме `--bare` у клиента есть инструмент `Edit`, но нет `Write`.)
 
@@ -32,10 +40,12 @@ Aegis принимает виртуальный ключ в любом из пр
 | **Claude Code** | Anthropic | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY` или `ANTHROPIC_AUTH_TOKEN` |
 | **Codex CLI**, OpenAI Agents SDK | OpenAI Responses | `~/.codex/config.toml`, `wire_api = "responses"` |
 | **Gemini CLI**, SDK Google GenAI | Gemini | `GOOGLE_GEMINI_BASE_URL`, `GEMINI_API_KEY` |
-| **Cline, Roo Code, Kilo Code** | Anthropic или OpenAI Chat | Провайдер «Anthropic» с адресом или «OpenAI Compatible» |
+| **Cline, Roo Code, Kilo Code** (CLI Kilo проверен) | Anthropic или OpenAI Chat | Провайдер «Anthropic» с адресом или «OpenAI Compatible» |
 | **Continue** | OpenAI Chat, Completions, Embeddings, Anthropic | `config.yaml`: `provider`, `apiBase`, `apiKey` |
 | **Aider** | OpenAI Chat, Anthropic | `OPENAI_API_BASE` / `ANTHROPIC_API_BASE` и ключи |
-| **OpenCode, Crush, Goose** | OpenAI Chat, Responses, Anthropic | Настройка провайдера с `baseURL` |
+| **OpenCode, Crush, Goose, Pi, Mistral Vibe** | OpenAI Chat, Responses, Anthropic | Настройка провайдера с `baseURL` |
+| **Hermes Agent, OpenClaw** | OpenAI Chat | Свой адрес в конфигурации (см. таблицу проверенных) |
+| **GitHub Copilot CLI** | OpenAI Chat | Режим своей модели `COPILOT_PROVIDER_*` |
 | **Qwen Code**, **Kimi CLI** | OpenAI Chat, Anthropic | `OPENAI_BASE_URL`, `OPENAI_API_KEY` (Qwen Code); тип провайдера и адрес в конфиге (Kimi CLI) |
 | **Zed** | OpenAI Chat, Anthropic | `language_models`: `api_url` |
 | **VS Code Copilot Chat (BYOK)**, **JetBrains AI Assistant** | OpenAI Chat | Свой OpenAI-совместимый эндпоинт. Встроенные подсказки кода идут через серверы вендора и не проходят |
@@ -87,7 +97,9 @@ export GEMINI_API_KEY=aegis-vk-...
 ## Что не проходит через Aegis
 
 - **Cursor, Windsurf, Trae, Kiro**: запросы идут через серверы вендора, даже с собственным ключом. Направить их в gateway нельзя.
-- **GitHub Copilot** (встроенные подсказки), **Amazon Q**, **JetBrains AI** (облако вендора): то же.
+- **GitHub Copilot** (встроенные подсказки), **Amazon Q**, **JetBrains AI** (облако вендора): то же. Исключение: **Copilot CLI** в режиме своей модели (`COPILOT_PROVIDER_*`) проходит через Aegis.
+- **Cursor CLI**, **Amp**, **Augment (Auggie)**, **Warp**: свой адрес модели не принимают, проверить нечего.
+- Не проверены настоящим бинарником: **Droid** (Factory: без входа в аккаунт не подхватил свои модели из `~/.factory/settings.json`), **iFlow CLI** (отмечен устаревшим, до провайдера не дошёл ни один запрос), **Kimi CLI** (старый пакет не поддерживается, новый ставится скриптом с сайта вендора). Для них остаются тесты формата запросов.
 - Нативные протоколы **AWS Bedrock** и **Google Vertex AI**: не поддерживаются (этап 3).
 
 Для всего этого действует только блокировка на периметре (`deploy/egress`) и настройки самого вендора (запрет отправки кода, политики организации).

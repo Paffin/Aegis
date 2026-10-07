@@ -12,6 +12,23 @@ pub const MAX_DEPTH: usize = 128;
 pub enum JsonError {
     Syntax(usize),
     TooDeep,
+    /// The same key twice in one object: parsers disagree about which one wins, so the body
+    /// could show different content to the scanner and to the provider.
+    DuplicateKey,
+    /// A string that a strict decoder rejects (lone surrogate, bad escape, invalid UTF-8).
+    BadString,
+}
+
+impl JsonError {
+    /// Value-free message for the client.
+    pub fn message(&self) -> &'static str {
+        match self {
+            JsonError::Syntax(_) => "тело запроса не является корректным JSON",
+            JsonError::TooDeep => "JSON глубже 128 уровней",
+            JsonError::DuplicateKey => "JSON содержит повторяющийся ключ в одном объекте",
+            JsonError::BadString => "JSON содержит строку, которую нельзя однозначно декодировать",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +142,13 @@ impl Parser<'_> {
             match c {
                 b'"' => {
                     self.pos += 1;
+                    let lit = &self.src[start..self.pos];
+                    // pure ASCII without escapes needs no decoding; everything else must decode strictly
+                    if (lit.iter().any(|b| *b == b'\\' || *b >= 0x80))
+                        && serde_json::from_slice::<String>(lit).is_err()
+                    {
+                        return Err(JsonError::BadString);
+                    }
                     return Ok(start..self.pos);
                 }
                 b'\\' => self.pos += 2,
@@ -144,6 +168,7 @@ impl Parser<'_> {
                 let start = self.pos;
                 self.pos += 1;
                 let mut members = vec![];
+                let mut seen: Option<std::collections::HashSet<String>> = None;
                 self.ws();
                 if self.src.get(self.pos) == Some(&b'}') {
                     self.pos += 1;
@@ -164,6 +189,21 @@ impl Parser<'_> {
                     self.pos += 1;
                     self.ws();
                     let value = self.value(depth + 1)?;
+                    // linear scan for small objects, a set once the object grows (no quadratic blow-up)
+                    let dup = if members.len() < 16 {
+                        members.iter().any(|m: &Member| m.key == key)
+                    } else {
+                        let set = seen.get_or_insert_with(|| {
+                            members
+                                .iter()
+                                .map(|m: &Member| m.key.clone())
+                                .collect::<std::collections::HashSet<String>>()
+                        });
+                        !set.insert(key.clone())
+                    };
+                    if dup {
+                        return Err(JsonError::DuplicateKey);
+                    }
                     members.push(Member { key, value });
                     self.ws();
                     match self.src.get(self.pos) {
@@ -221,7 +261,8 @@ impl Parser<'_> {
                 {
                     self.pos += 1;
                 }
-                if start == self.pos {
+                if start == self.pos || !valid_literal(&self.src[start..self.pos]) {
+                    self.pos = start;
                     return self.err();
                 }
                 Ok(Node::Lit {
@@ -231,6 +272,50 @@ impl Parser<'_> {
             None => self.err(),
         }
     }
+}
+
+/// `true`, `false`, `null` or a number in JSON grammar; nothing else (no `01`, `1.`, `+1`, `NaN`).
+fn valid_literal(l: &[u8]) -> bool {
+    if matches!(l, b"true" | b"false" | b"null") {
+        return true;
+    }
+    let mut i = 0;
+    if l.get(i) == Some(&b'-') {
+        i += 1;
+    }
+    match l.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            while l.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
+            }
+        }
+        _ => return false,
+    }
+    if l.get(i) == Some(&b'.') {
+        i += 1;
+        let d = i;
+        while l.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == d {
+            return false;
+        }
+    }
+    if matches!(l.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(l.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let d = i;
+        while l.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        if i == d {
+            return false;
+        }
+    }
+    i == l.len()
 }
 
 /// Byte-range replacements applied to the original body.
@@ -256,6 +341,11 @@ impl Edits {
 
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
+    }
+
+    /// Start offsets of the replaced ranges.
+    pub fn starts(&self) -> impl Iterator<Item = usize> + '_ {
+        self.list.iter().map(|(r, _)| r.start)
     }
 
     pub fn apply(mut self, src: &[u8]) -> Vec<u8> {
@@ -332,6 +422,48 @@ mod tests {
         ] {
             assert!(parse(bad.as_bytes()).is_err(), "{bad:?}");
         }
+    }
+
+    // REQ: SEC-10, NFR-07 — duplicate detection must not be a way to stall the gateway.
+    #[test]
+    fn huge_objects_parse_fast_and_duplicates_are_still_found() {
+        let n = 200_000;
+        let body = format!(
+            "{{{}}}",
+            (0..n)
+                .map(|i| format!("\"k{i}\":1"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let t = std::time::Instant::now();
+        assert!(parse(body.as_bytes()).is_ok());
+        assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+        let dup = format!(
+            "{{{},\"k150000\":2}}",
+            (0..n)
+                .map(|i| format!("\"k{i}\":1"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        assert!(matches!(
+            parse(dup.as_bytes()),
+            Err(JsonError::DuplicateKey)
+        ));
+    }
+
+    // REQ: SEC-10 — the same objects at different nesting levels are not duplicates.
+    #[test]
+    fn same_key_in_different_objects_is_fine() {
+        assert!(parse(br#"{"a":{"a":1},"b":[{"a":1},{"a":2}]}"#).is_ok());
+        assert!(matches!(
+            parse(br#"{"a":1,"b":{},"a":2}"#),
+            Err(JsonError::DuplicateKey)
+        ));
+        // escaped and plain spellings of one key are the same key
+        assert!(matches!(
+            parse(br#"{"a":1,"\u0061":2}"#),
+            Err(JsonError::DuplicateKey)
+        ));
     }
 
     #[test]

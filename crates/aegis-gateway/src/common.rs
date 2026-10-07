@@ -5,6 +5,7 @@ use crate::engine::{Engine, RequestCtx, SinkAudit};
 use aegis_core::policy::{is_shell_tool, Sink};
 use aegis_core::restore::{restore, sink_for_command, SinkContext};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct Denied {
@@ -433,5 +434,140 @@ mod tests {
                 && t.contains("req-9")
                 && t.contains("Bash")
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Default-deny sweep (PRO-10)
+// ---------------------------------------------------------------------------
+
+/// Keys whose string values the provider needs byte-identical (identifiers and enumerations).
+/// They are not masked; a detected secret in one of them rejects the request instead.
+const STRUCTURAL_KEYS: &[&str] = &[
+    "type",
+    "id",
+    "call_id",
+    "tool_use_id",
+    "tool_call_id",
+    "role",
+    "model",
+    "name",
+    "media_type",
+    "object",
+    "status",
+];
+
+/// Shortest string that any detector can match; shorter structural strings are not checked.
+const GUARD_MIN_LEN: usize = 8;
+
+/// What the adapters did not recognise: string leaves to scan like any other block, and
+/// identifier-like strings that must stay intact but may not carry a secret.
+#[derive(Default)]
+pub struct Sweep<'n> {
+    pub leaves: Vec<&'n crate::json::Node>,
+    pub guarded: Vec<String>,
+}
+
+/// Walk the whole document. `skip` holds the start offsets of nodes already handled by the
+/// adapter (scanned strings, replaced attachments, opaque thinking blocks).
+pub fn sweep<'n>(
+    node: &'n crate::json::Node,
+    body: &[u8],
+    skip: &HashSet<usize>,
+    out: &mut Sweep<'n>,
+) {
+    walk(node, body, skip, out, None);
+}
+
+fn walk<'n>(
+    node: &'n crate::json::Node,
+    body: &[u8],
+    skip: &HashSet<usize>,
+    out: &mut Sweep<'n>,
+    key: Option<&str>,
+) {
+    use crate::json::Node;
+    if skip.contains(&node.span().start) {
+        return;
+    }
+    match node {
+        Node::Str { .. } => {
+            if key.is_some_and(|k| STRUCTURAL_KEYS.contains(&k)) {
+                if let Some(s) = node.string(body) {
+                    out.guarded.push(s);
+                }
+            } else {
+                out.leaves.push(node);
+            }
+        }
+        Node::Obj { members, .. } => {
+            for m in members {
+                out.guarded.push(m.key.clone());
+                walk(&m.value, body, skip, out, Some(&m.key));
+            }
+        }
+        Node::Arr { items, .. } => items.iter().for_each(|i| walk(i, body, skip, out, None)),
+        // A long number can be a card or an account number; it cannot be replaced by a marker
+        // without changing its type, so it is guarded rather than masked.
+        Node::Lit { span } => {
+            if span.len() >= 12 {
+                // With its key, so that detectors which need a context (cards) see one.
+                out.guarded.push(format!(
+                    "{}={}",
+                    key.unwrap_or(""),
+                    String::from_utf8_lossy(&body[span.clone()])
+                ));
+            }
+        }
+    }
+}
+
+/// Keys of the JSON documents nested in string literals (tool-call arguments).
+pub fn nested_keys(node: &crate::json::Node, out: &mut Vec<String>) {
+    use crate::json::Node;
+    match node {
+        Node::Obj { members, .. } => {
+            for m in members {
+                out.push(m.key.clone());
+                nested_keys(&m.value, out);
+            }
+        }
+        Node::Arr { items, .. } => items.iter().for_each(|i| nested_keys(i, out)),
+        _ => {}
+    }
+}
+
+/// Reject the request when an identifier-like field or an object key carries a secret.
+pub fn guard(
+    engine: &Engine,
+    route: &str,
+    texts: &[String],
+) -> Result<(), crate::engine::IngressError> {
+    use aegis_core::policy::Ingress;
+    let mut seen: HashSet<&str> = HashSet::new();
+    for t in texts {
+        if t.len() < GUARD_MIN_LEN || !seen.insert(t.as_str()) {
+            continue;
+        }
+        for e in engine.scan(t).entities {
+            let (act, rule) = engine.ingress.decide(&e, route);
+            if !matches!(act, Ingress::Allow) {
+                return Err(crate::engine::IngressError::Blocked {
+                    rule: format!("служебное поле, {rule}"),
+                    ty: e.ty,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The 403 for a request that an ingress rule blocks.
+pub fn blocked(e: crate::engine::IngressError, request_id: &str) -> crate::anthropic::Reject {
+    let crate::engine::IngressError::Blocked { rule, ty } = e;
+    crate::anthropic::Reject {
+        status: 403,
+        kind: "permission_error",
+        message: format!("Aegis: запрос отклонён политикой. Причина: {} в запросе (правило {rule}). Удалите значение из контекста и повторите. Request ID: {request_id}", ty.marker()),
     }
 }

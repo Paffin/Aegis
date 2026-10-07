@@ -4,10 +4,8 @@
 //! leaf, never as raw text, so escapes cannot be cut by a replacement.
 
 use crate::anthropic::{Reject, ReqMeta};
-use crate::common::{restore_arguments, restore_text};
-use crate::engine::{
-    process_blocks, Blk, Engine, IngressError, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE,
-};
+use crate::common::{blocked, restore_arguments, restore_text};
+use crate::engine::{process_blocks, Blk, Engine, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE};
 use crate::json::{self, Edits, Node};
 use crate::stream::{safe_prefix_len, SseParser};
 use aegis_core::crypto::{derive_salt, SaltInput};
@@ -87,10 +85,7 @@ pub fn transform_request(
     body: &[u8],
 ) -> Result<(Vec<u8>, RequestCtx), Reject> {
     let t_parse = std::time::Instant::now();
-    let root = json::parse(body).map_err(|e| match e {
-        json::JsonError::TooDeep => bad("JSON глубже 128 уровней"),
-        json::JsonError::Syntax(_) => bad("тело запроса не является корректным JSON"),
-    })?;
+    let root = json::parse(body).map_err(|e| bad(e.message()))?;
     let Node::Obj {
         span: root_span,
         members,
@@ -243,6 +238,33 @@ pub fn transform_request(
         }
     }
 
+    // PRO-10: whatever the adapter did not recognise is scanned too (default deny).
+    let mut skip: HashSet<usize> = edits.starts().collect();
+    skip.extend(
+        col.blocks
+            .iter()
+            .zip(&col.owner)
+            .filter(|(_, o)| o.is_none())
+            .map(|(b, _)| b.node.span().start),
+    );
+    skip.extend(nested.iter().map(|n| n.outer.span().start));
+    let mut sw = crate::common::Sweep::default();
+    crate::common::sweep(&root, body, &skip, &mut sw);
+    for n in &nested {
+        crate::common::nested_keys(&n.root, &mut sw.guarded);
+    }
+    for l in sw.leaves {
+        col.push(
+            l,
+            l.string(body).unwrap_or_default(),
+            Source::User,
+            false,
+            None,
+        );
+    }
+    crate::common::guard(engine, meta.route, &sw.guarded)
+        .map_err(|e| blocked(e, meta.request_id))?;
+
     // Salt (PSE-03)
     let fu: Vec<&str> = first_user.iter().map(|s| s.as_str()).collect();
     let (salt, _) = derive_salt(
@@ -269,13 +291,8 @@ pub fn transform_request(
             .collect(),
     };
     let (blocks, owner) = (col.blocks, col.owner);
-    let rendered = process_blocks(engine, &mut ctx, &blocks).map_err(|e| match e {
-        IngressError::Blocked { rule, ty } => Reject {
-            status: 403,
-            kind: "permission_error",
-            message: format!("Aegis: запрос отклонён политикой. Причина: {} в сообщении (правило {rule}). Удалите значение из контекста и повторите. Request ID: {}", ty.marker(), meta.request_id),
-        },
-    })?;
+    let rendered =
+        process_blocks(engine, &mut ctx, &blocks).map_err(|e| blocked(e, meta.request_id))?;
 
     // Apply: nested documents first, then their outer literals.
     let mut nested_edits: Vec<Edits> = nested.iter().map(|_| Edits::default()).collect();

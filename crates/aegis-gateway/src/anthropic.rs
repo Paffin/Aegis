@@ -1,9 +1,7 @@
 //! REQ: PRO-01, PRO-04, PRO-05, PRO-07, PRO-09, PRO-10, IR-01..IR-04, INV-2, PSE-10,
 //! RSP-02, RSP-07, API-03, API-04 — Anthropic Messages adapter.
 
-use crate::engine::{
-    process_blocks, Blk, Engine, IngressError, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE,
-};
+use crate::engine::{process_blocks, Blk, Engine, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE};
 use crate::json::{self, Edits, Node};
 use aegis_core::crypto::{derive_salt, SaltInput};
 use aegis_core::pseudo::{Mapping, Source};
@@ -81,7 +79,7 @@ const SKIP_KEYS: &[&str] = &[
     "data",
 ];
 
-use crate::common::tool_path;
+use crate::common::{blocked, tool_path};
 
 fn attachment_edit(edits: &mut Edits, block: &Node) {
     let repl =
@@ -105,10 +103,7 @@ pub fn transform_request(
         message: format!("Aegis: {m}"),
     };
     let t_parse = std::time::Instant::now();
-    let root = json::parse(body).map_err(|e| match e {
-        json::JsonError::TooDeep => bad("JSON глубже 128 уровней"),
-        json::JsonError::Syntax(_) => bad("тело запроса не является корректным JSON"),
-    })?;
+    let root = json::parse(body).map_err(|e| bad(e.message()))?;
     if !matches!(root, Node::Obj { .. }) {
         return Err(bad("ожидался объект JSON"));
     }
@@ -158,6 +153,7 @@ pub fn transform_request(
     let mut first_user: Vec<String> = vec![];
     let mut first_user_done = false;
     let mut system_blocked = false;
+    let mut opaque: HashSet<usize> = HashSet::new();
 
     // system
     let mut notice_insert: Option<NoticeInsert> = None;
@@ -244,7 +240,9 @@ pub fn transform_request(
                     let ty = b.str_at("type", body).unwrap_or_default();
                     match ty.as_str() {
                         // INV-2: signed and encrypted blocks pass untouched.
-                        "thinking" | "redacted_thinking" => {}
+                        "thinking" | "redacted_thinking" => {
+                            opaque.insert(b.span().start);
+                        }
                         t if is_attachment(t) => attachment_edit(&mut edits, b),
                         "text" => {
                             if let Some(t @ Node::Str { .. }) = b.get("text") {
@@ -335,6 +333,23 @@ pub fn transform_request(
         }
     }
 
+    // PRO-10: whatever the adapter did not recognise is scanned too (default deny).
+    let mut skip: HashSet<usize> = edits.starts().collect();
+    skip.extend(opaque);
+    skip.extend(blocks.iter().map(|b| b.node.span().start));
+    let mut sw = crate::common::Sweep::default();
+    crate::common::sweep(&root, body, &skip, &mut sw);
+    for l in sw.leaves {
+        blocks.push(Blk {
+            node: l,
+            text: l.string(body).unwrap_or_default(),
+            source: Source::User,
+            is_system: false,
+        });
+    }
+    crate::common::guard(engine, meta.route, &sw.guarded)
+        .map_err(|e| blocked(e, meta.request_id))?;
+
     // Salt (PSE-03)
     let fu: Vec<&str> = first_user.iter().map(|s| s.as_str()).collect();
     let t_start = std::time::Instant::now();
@@ -362,9 +377,8 @@ pub fn transform_request(
             .collect(),
     };
 
-    let rendered = process_blocks(engine, &mut ctx, &blocks).map_err(|e| match e {
-        IngressError::Blocked { rule, ty } => Reject { status: 403, kind: "permission_error", message: format!("Aegis: запрос отклонён политикой. Причина: {} в сообщении (правило {rule}). Удалите значение из контекста и повторите. Request ID: {}", ty.marker(), meta.request_id) },
-    })?;
+    let rendered =
+        process_blocks(engine, &mut ctx, &blocks).map_err(|e| blocked(e, meta.request_id))?;
     for (b, t) in blocks.iter().zip(&rendered.texts) {
         if let Some(t) = t {
             edits.replace_string(b.node, t);

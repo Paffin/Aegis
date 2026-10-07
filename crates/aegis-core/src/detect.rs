@@ -942,8 +942,8 @@ impl Detector for PiiDetector {
         for m in self.card_bare.find_iter(text) {
             let v = m.as_str();
             let iin_ok = matches!(v.as_bytes()[0], b'2'..=b'6');
-            let adjacent = byte_before(text, m.start())
-                .is_some_and(|c| c == '.' || c == '-' || c == '_' || c == ':' && false);
+            let adjacent =
+                byte_before(text, m.start()).is_some_and(|c| c == '.' || c == '-' || c == '_');
             if iin_ok
                 && !adjacent
                 && luhn_ok(v)

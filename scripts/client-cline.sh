@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: Cline CLI (`cline -y`) talks to Aegis over Chat Completions (an OpenAI-compatible provider),
 # Aegis talks to a mock provider. Cline is taken from PATH or installed with npm into a temporary directory.
 # The mock ends the task the way Cline expects, with the `submit_and_exit` tool. Same checks as client-qwen.sh.

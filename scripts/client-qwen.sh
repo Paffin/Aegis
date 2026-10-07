@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: Qwen Code (`qwen -p`, an OpenAI-compatible agent; Gemini CLI fork) talks to Aegis over
 # Chat Completions, Aegis talks to a mock provider. Qwen Code is taken from PATH or installed with npm into a
 # temporary directory. Same checks as client-codex.sh. Skips without Qwen Code.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: NFR-06, NFR-09, CFG-02, SEC-01
 # End-to-end smoke test with the real binaries: aegis CLI -> signed bundle -> aegis-gateway -> mock provider.
 # Checks: the bundle supplies policy and virtual keys, a provider never sees real values,
 # a new bundle (key revoked) takes effect without a restart, a corrupt bundle changes nothing,

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: OpenCode (`opencode run`) talks to Aegis over Chat Completions (a custom OpenAI-compatible
 # provider), Aegis talks to a mock provider. OpenCode is taken from PATH or installed with npm into a temporary
 # directory. Same checks as client-qwen.sh. Skips without OpenCode.

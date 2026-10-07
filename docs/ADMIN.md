@@ -8,7 +8,7 @@
 |---|---|
 | `aegis-gateway` | Прокси между клиентами и провайдерами: Anthropic Messages, OpenAI (Chat Completions, Responses без состояния, Completions, Embeddings), Google Gemini |
 | `aegis` | Администрирование: ключи подписи, сборка и проверка бандла политики, тесты политики, виртуальные ключи, отчёты по аудиту, `aegis scan` (что было бы замаскировано в ваших файлах) |
-| `aegis-bench` | Измерения качества: ложные срабатывания, полнота, задержка |
+| `aegis-bench` | Измерения: ложные срабатывания, полнота, задержка преобразования, нагрузка по HTTP (`load`) |
 
 ## 2. Запуск
 
@@ -37,13 +37,12 @@ aegis-gateway /etc/aegis/gateway.json
 | `openai_base_url`, `openai_api_prefix`, `openai_auth` | OpenAI-совместимый провайдер: Chat Completions, Responses, Completions, Embeddings |
 | `gemini_base_url` | Google Gemini API |
 
-Нужен хотя бы один провайдер. Подробности, адреса и примеры для DeepSeek, Qwen, Kimi, GLM, Azure, Ollama и других — в [PROVIDERS.md](PROVIDERS.md). Файл примера — [examples/gateway.json](../examples/gateway.json).
-
-
 | `tenant` | Идентификатор тенанта |
 | `bundle` | `source` (путь или URL), `cache_path`, `trusted_keys` (hex открытых ключей), `reload_seconds` (1–30) |
 | `audit_path`, `audit_required`, `audit_queue` | Файл аудита JSONL (по умолчанию stdout), остановка трафика при переполнении очереди, размер очереди |
 | `internal_zones`, `company_ranges`, `service_account_patterns`, `employees`, `terms`, `virtual_keys` | Те же настройки без бандла. С бандлом их задаёт политика |
+
+Нужен хотя бы один провайдер. Подробности, адреса и примеры для DeepSeek, Qwen, Kimi, GLM, Azure, Ollama и других — в [PROVIDERS.md](PROVIDERS.md). Файл примера — [examples/gateway.json](../examples/gateway.json).
 
 ### Проверка до внедрения
 
@@ -137,3 +136,18 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 - Изображения и PDF заменяются текстовым уведомлением.
 - Cursor, Windsurf и встроенные подсказки GitHub Copilot ходят через серверы вендоров и в gateway не направляются; для них действует только блокировка на периметре (`deploy/egress`). Полный список клиентов — в [CLIENTS.md](CLIENTS.md).
 - Образ контейнера собран и запущен, Helm-чарт отрендерен (`helm lint`, `helm template`), но в кластере манифесты не применялись: проверьте NetworkPolicy, пробы и egress у себя.
+
+## 8. Проверка установки
+
+В репозитории есть сценарии, которые можно запустить на своей машине или в CI:
+
+| Сценарий | Что проверяет |
+|---|---|
+| `scripts/demo.sh` | Клиент, Aegis и «провайдер», который печатает полученное: что видит провайдер, что возвращается клиенту |
+| `scripts/smoke.sh` | Настоящие бинарники: бандл, ключи, горячая замена, повреждённый бандл, аудит без значений, SIGTERM во время потока |
+| `scripts/clients.sh` | Настоящие Claude Code, Codex, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (нужны Node.js и npm; Aider ставится через `uv`). Не установленный клиент пропускается |
+| `scripts/trace.sh` | Какие требования спецификации покрыты тестами |
+| `aegis-bench load --dir <исходники>` | Добавка ко времени до первого байта, поток запросов, одновременные потоки |
+| `aegis-bench fp`, `recall`, `perf` | Ложные срабатывания, полнота, задержка преобразования |
+
+Подставные провайдеры (`scripts/mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`) пригодны и для проверки вашего клиента: они записывают каждый запрос в файл.

@@ -20,7 +20,7 @@ def expand(a, b):
     return [f"{pa}-{n:02d}" if len(na) == 2 else f"{pa}-{n}" for n in range(int(na), int(nb) + 1)] if pa == pb else [a, b]
 
 covered = {}
-for f in glob.glob("crates/**/*.rs", recursive=True) + glob.glob("crates/**/tests/**/*.rs", recursive=True):
+for f in glob.glob("crates/**/*.rs", recursive=True) + glob.glob("crates/**/tests/**/*.rs", recursive=True) + glob.glob("scripts/*.sh"):
     for i, line in enumerate(open(f, encoding="utf-8"), 1):
         mm = re.search(r"REQ:\s*(.*)", line)
         if not mm:

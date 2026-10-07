@@ -4,7 +4,7 @@
 
 ## Что нужнее всего
 
-1. **Записи сессий настоящих клиентов** (Claude Code, Codex, Gemini CLI, Cline, Continue, Qwen Code…) без значений: заголовки, структура, события потока. Это главный непроверенный риск ([STATUS](docs/STATUS.md)).
+1. **Настоящие провайдеры.** Клиенты проверены против подставных провайдеров (`scripts/clients.sh`); приём подписей thinking и `thoughtSignature` настоящими провайдерами не подтверждён. Нужны записи сессий без значений: заголовки, структура, события потока. Также нужны сценарии `scripts/client-*.sh` для клиентов, которых ещё нет (Roo и Kilo Code, Zed, Goose, Open WebUI) ([STATUS](docs/STATUS.md)).
 2. **Ложные срабатывания и пропуски** на вашем коде. Запускайте `aegis scan`, присылайте тип, вид и контекст без самих значений.
 3. **Обходы**: запрос, в котором значение доходит до провайдера. Если это уязвимость, пишите по [SECURITY.md](SECURITY.md), а не в публичный issue.
 4. Провайдеры и клиенты, которых нет в [PROVIDERS](docs/PROVIDERS.md) и [CLIENTS](docs/CLIENTS.md).
@@ -16,7 +16,9 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 scripts/smoke.sh        # сквозной тест на настоящих бинарниках
+scripts/clients.sh      # настоящие клиенты против Aegis и подставного провайдера
 scripts/trace.sh        # какие требования спецификации покрыты тестами
+PROPTEST_CASES=40000 cargo test --release -p aegis-gateway --test fuzz   # долгий прогон фаззинга
 ```
 
 CI запускает то же самое плюс гейты качества (`aegis-bench`: полнота, ложные срабатывания, задержка). Pull request, который не проходит `clippy -D warnings`, не принимается; `unsafe` в рабочем пространстве запрещён.

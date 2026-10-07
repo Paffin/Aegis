@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: Aider (`aider --message`) talks to Aegis over Chat Completions (streaming), Aegis talks to
 # a mock provider. Aider is taken from PATH or installed with `uv tool install`. Aider has no tool calls: the point
 # is that the prompt and the content of the files added to the chat are masked. Skips without Aider.

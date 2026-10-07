@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: the Claude Code CLI (headless) talks to Aegis, Aegis talks to a mock provider.
 # Verifies with the real client's own requests: the query string (`?beta=true`) and the beta headers
 # reach the provider, values are masked, the provider key replaces the client key, a tool call that

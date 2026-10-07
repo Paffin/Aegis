@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: Gemini CLI (`gemini -p`) talks to Aegis over the Gemini API (SSE), Aegis talks to a mock
 # provider. Gemini CLI is taken from PATH or installed with npm into a temporary directory.
 # Same checks as client-codex.sh. Skips without Gemini CLI.

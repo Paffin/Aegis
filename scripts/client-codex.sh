@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# REQ: QA-14, PRO-16, RSP-07, INV-6
 # Real-client check: the Codex CLI (`codex exec`) talks to Aegis over the Responses API, Aegis talks to a
 # mock provider. Codex is taken from PATH or installed with npm into a temporary directory.
 # Verifies: values are masked, the provider key replaces the client key, the harmless command runs

@@ -16,3 +16,7 @@ jobs:
         run: scripts/trace.sh
       - name: Smoke test with real binaries
         run: scripts/smoke.sh
+      - name: Detection quality gates (QA-05)
+        run: |
+          cargo run -q --release -p aegis-bench -- recall --n 1000 --min-recall 98
+          cargo run -q --release -p aegis-bench -- fp --dir "$HOME/.cargo/registry/src" --samples 0 --max-per-10k 8

@@ -90,9 +90,7 @@ impl Default for DetectConfig {
             .iter()
             .map(|s| s.to_string())
             .collect(),
-            service_account_patterns: vec![
-                r"\b(?:svc|srv)[_\-][A-Za-z0-9][A-Za-z0-9_\-]*".to_string()
-            ],
+            service_account_patterns: vec![],
         }
     }
 }
@@ -108,6 +106,44 @@ impl DetectConfig {
             .map(|z| z.to_string())
             .chain(self.internal_zones.iter().cloned())
             .any(|z| h == z || h.ends_with(&format!(".{z}")))
+    }
+
+    /// Free-text variant of [`is_internal_host`]: a built-in zone such as `.local` also appears as a
+    /// method call in code (`listener.local`), so it needs at least two labels before it, or a
+    /// label that looks like a host name (`prod-db01.local`).
+    pub fn is_internal_host_in_text(&self, host: &str) -> bool {
+        let h = host.to_ascii_lowercase();
+        let h = h.trim_end_matches('.');
+        if self
+            .internal_zones
+            .iter()
+            .any(|z| h == z || h.ends_with(&format!(".{z}")))
+        {
+            return true;
+        }
+        let labels: Vec<&str> = h.split('.').collect();
+        let (zone, before) = match labels.split_last() {
+            Some((z, b)) => (*z, b),
+            None => return false,
+        };
+        if !BUILTIN_ZONES.contains(&zone) || before.is_empty() {
+            return false;
+        }
+        // `self.engine.internal`, `args.local`: member access in code, not a host name
+        const CODE_RECEIVERS: &[&str] = &[
+            "self", "this", "cls", "super", "args", "opts", "options", "config", "cfg", "ctx",
+            "state", "inner", "node", "info", "data", "item", "req", "res", "conn", "stream",
+            "socket", "server", "client", "listener", "mock", "builder", "handle", "engine",
+            "settings", "params",
+        ];
+        if CODE_RECEIVERS.contains(&before[0])
+            || (before.len() >= 2 && before.iter().any(|l| CODE_RECEIVERS.contains(l)))
+        {
+            return false;
+        }
+        before.len() >= 2
+            || before[0].contains('-')
+            || before[0].chars().any(|c| c.is_ascii_digit())
     }
 
     pub fn is_private_ipv4(&self, ip: u32) -> bool {
@@ -160,20 +196,113 @@ impl DetectConfig {
 pub struct SecretDetector {
     known: Vec<(Regex, &'static str)>,
     pem: Regex,
-    assign: Regex,
+    /// `password = "value"`, `password := "value"`, `"password": "value"`, `password => 'value'`.
+    quoted: Regex,
+    /// `setdefault("PASSWORD", "value")`: the key and the value are two literals.
+    pair: Regex,
+    /// `- name: DB_PASSWORD` followed by `value: "..."` (Kubernetes, CI).
+    kv_lines: Regex,
+    /// `PASSWORD=value` or `password: value` alone on a line (env, ini, YAML).
+    config: Regex,
+    /// `host x password=value` in free text: `=` only, key delimited on the left.
+    inline_eq: Regex,
+    /// `Пароль от УЗ: value`, `пароль - value`: the keyword, up to three words, then `:` or a dash.
+    inline_prose: Regex,
+    /// `--password value`, `?token=value`.
+    flag: Regex,
     basic: Regex,
     bearer: Regex,
     cfg: DetectConfig,
 }
 
+/// English and Russian keywords that mark the following value as a secret.
+const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
+
+/// `${DB_PASS}`, `$DB_PASS`, `{{ vault.x }}`, `<your-token>`: a reference, not a value.
+fn is_reference(v: &str) -> bool {
+    let t = v.trim_matches(['"', '\'']);
+    let braced = t.starts_with("${") && t.ends_with('}');
+    let env_style = t.starts_with('$')
+        && t.len() > 1
+        && t[1..]
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && t[1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_uppercase() || c == '_');
+    braced
+        || env_style
+        || t.starts_with("{{")
+        || t.starts_with("<")
+        || t.starts_with("%(")
+        || t.starts_with("%{")
+}
+
+/// A value that reads like code or a type rather than a secret (DET-05): identifiers,
+/// paths, calls, generics. `quoted` values come from a string literal and are judged less strictly.
+fn looks_like_code_value(v: &str, quoted: bool) -> bool {
+    let lower = v.to_ascii_lowercase();
+    let always = v.contains("::")
+        || v.contains(['(', ')', '<', '>', '{', '}'])
+        || is_dotted_path(v)
+        || is_abnf_repetition(v)
+        || is_reference(v)
+        || lower.starts_with("os.environ")
+        || lower.starts_with("process.env")
+        || lower.starts_with("env(")
+        || lower.starts_with("getenv")
+        // an identifier made only of lowercase letters and underscores (`access_token`)
+        || (!v.is_empty() && v.chars().all(|c| c.is_ascii_lowercase() || c == '_') && v.len() >= 3)
+        // CamelCase type names (`Struct`, `StrOrBytes`) without digits or symbols
+        || (v.chars().next().is_some_and(|c| c.is_ascii_uppercase()) && v.chars().all(|c| c.is_ascii_alphabetic()) && v.chars().skip(1).any(|c| c.is_ascii_lowercase()) && v.len() <= 24);
+    if always {
+        return true;
+    }
+    if quoted {
+        v.starts_with("--")
+    } else {
+        // `::path`, `&str`, `*const T`, `--flag`
+        v.starts_with([':', '&', '*']) || v.starts_with("--")
+    }
+}
+
+/// `1*tchar` (ABNF repetition)
+fn is_abnf_repetition(v: &str) -> bool {
+    v.split_once('*').is_some_and(|(n, r)| {
+        n.chars().all(|c| c.is_ascii_digit())
+            && r.chars().all(|c| c.is_ascii_alphabetic())
+            && !r.is_empty()
+    })
+}
+
+/// `args.password`, `config.db.token` — a member path, not a value.
+fn is_dotted_path(v: &str) -> bool {
+    v.contains('.')
+        && v.split('.').all(|p| {
+            !p.is_empty()
+                && p.chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+}
+
+fn has_digit_or_symbol(v: &str) -> bool {
+    v.chars()
+        .any(|c| c.is_ascii_digit() || !(c.is_alphanumeric() || c == '_'))
+}
+
 impl SecretDetector {
     pub fn new(cfg: DetectConfig) -> Self {
         let k = |p: &str, kind: &'static str| (Regex::new(p).expect("static regex"), kind);
+        let re = |p: String| Regex::new(&p).expect("static regex");
         Self {
             known: vec![
                 k(r"\bAKIA[0-9A-Z]{16}\b", "aws"),
                 k(r"\bASIA[0-9A-Z]{16}\b", "aws"),
-                k(r"\bAIza[0-9A-Za-z_\-]{35}\b", "gcp"),
+                // fixed length: no trailing `\b`, the last character may be `-`
+                k(r"\bAIza[0-9A-Za-z_\-]{35}", "gcp"),
                 k(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "github"),
                 k(r"\bgithub_pat_[A-Za-z0-9_]{50,}\b", "github"),
                 k(r"\bglpat-[A-Za-z0-9_\-]{20,}", "gitlab"),
@@ -186,14 +315,16 @@ impl SecretDetector {
                 k(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}", "jwt"),
                 k(r"AccountKey=[A-Za-z0-9+/=]{40,}", "azure"),
             ],
-            pem: Regex::new(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
-                .expect("static regex"),
-            assign: Regex::new(
-                r#"(?i)(?:password|passwd|pwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret)[\w\-]*["']?\s*[:=]\s*["']?([^\s"'`,;{}<>\[\]()$]{4,})"#,
-            )
-            .expect("static regex"),
-            basic: Regex::new(r"(?i)authorization:\s*basic\s+([A-Za-z0-9+/=]{16,})").expect("static regex"),
-            bearer: Regex::new(r"(?i)\bbearer\s+([A-Za-z0-9._\-]{20,})").expect("static regex"),
+            pem: re(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----".into()),
+            quoted: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*["']([^"'\s]{{4,}})["']"#)),
+            pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
+            kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
+            config: re(format!(r#"(?im)^[ \t]*(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
+            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*([^\s"',;)\]}}#]{{6,}})"#)),
+            inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
+            flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
+            basic: re(r"(?i)authorization:\s*basic\s+([A-Za-z0-9+/=]{16,})".into()),
+            bearer: re(r"(?i)\bbearer\s+([A-Za-z0-9._\-]{20,})".into()),
             cfg,
         }
     }
@@ -227,18 +358,37 @@ impl Detector for SecretDetector {
                 100,
             ));
         }
-        for c in self.assign.captures_iter(text) {
-            if let Some(v) = c.get(1) {
-                if !self.cfg.is_placeholder(v.as_str()) {
-                    out.push(cand(
-                        v.start(),
-                        v.end(),
-                        EntityType::Secret,
-                        Some("password"),
-                        "secret.assign",
-                        60,
-                    ));
+        // (regex, value is a quoted literal, needs a digit or symbol)
+        for (re, quoted, need_symbol) in [
+            (&self.quoted, true, false),
+            (&self.pair, true, false),
+            (&self.kv_lines, true, false),
+            (&self.config, false, true),
+            (&self.inline_eq, false, true),
+            (&self.inline_prose, false, true),
+            (&self.flag, false, true),
+        ] {
+            for c in re.captures_iter(text) {
+                let Some(v) = c.get(1) else { continue };
+                let val = v.as_str().trim_end_matches([',', ';']);
+                let kw_inside = ["password", "secret", "token", "пароль", "токен", "секрет"]
+                    .iter()
+                    .any(|k| val.to_lowercase() == *k);
+                if self.cfg.is_placeholder(val)
+                    || looks_like_code_value(val, quoted)
+                    || kw_inside
+                    || (need_symbol && !has_digit_or_symbol(val))
+                {
+                    continue;
                 }
+                out.push(cand(
+                    v.start(),
+                    v.start() + val.len(),
+                    EntityType::Secret,
+                    Some("password"),
+                    "secret.assign",
+                    60,
+                ));
             }
         }
         for c in self.basic.captures_iter(text) {
@@ -279,6 +429,9 @@ pub struct InfraDetector {
     fqdn: Regex,
     uri: Regex,
     svc: Vec<Regex>,
+    /// `user: svc_payment` — the built-in pattern applies only in an account context, because
+    /// `svc_` is also a common prefix of variable names in code.
+    svc_context: Regex,
 }
 
 impl InfraDetector {
@@ -290,6 +443,7 @@ impl InfraDetector {
             .collect();
         Self {
             svc,
+            svc_context: Regex::new(r#"(?i)\b(?:user(?:name)?|login|account|principal|owner|run_?as|service_?account|db_?user)\b["']?(?:\s*[:=]\s*|\s+)["']?((?:svc|srv)[_\-][A-Za-z0-9][A-Za-z0-9_\-]*)|(?:^|\s)-[uUl]\s+((?:svc|srv)[_\-][A-Za-z0-9][A-Za-z0-9_\-]*)"#).expect("static regex"),
             cfg,
             ipv4: Regex::new(r"(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?").expect("static regex"),
             ipv6: Regex::new(r"(?i)\bf[cd][0-9a-f]{2}(?::[0-9a-f]{0,4}){2,7}(?:/\d{1,3})?").expect("static regex"),
@@ -351,7 +505,21 @@ impl Detector for InfraDetector {
                 .map(|m| m.as_str().to_ascii_lowercase())
                 .unwrap_or_default();
             if let Some(u) = c.get(2) {
-                if c.get(3).is_some() {
+                let placeholder_user = matches!(
+                    u.as_str().to_ascii_lowercase().as_str(),
+                    "user"
+                        | "username"
+                        | "login"
+                        | "name"
+                        | "foo"
+                        | "bar"
+                        | "example"
+                        | "test"
+                        | "me"
+                        | "u"
+                        | "a"
+                );
+                if c.get(3).is_some() && !placeholder_user {
                     out.push(cand(
                         u.start(),
                         u.end(),
@@ -363,7 +531,10 @@ impl Detector for InfraDetector {
                 }
             }
             if let Some(p) = c.get(3) {
-                if !p.as_str().is_empty() && !self.cfg.is_placeholder(p.as_str()) {
+                if p.as_str().len() >= 4
+                    && !self.cfg.is_placeholder(p.as_str())
+                    && !looks_like_code_value(p.as_str(), true)
+                {
                     out.push(cand(
                         p.start(),
                         p.end(),
@@ -378,15 +549,22 @@ impl Detector for InfraDetector {
                 let hs = h.as_str();
                 let is_ip = parse_ipv4(hs).is_some();
                 let single_label = !hs.contains('.');
-                let internal = self.cfg.is_internal_host(hs)
-                    || (is_ip
-                        && parse_ipv4(hs)
-                            .map(|ip| self.cfg.is_private_ipv4(ip))
-                            .unwrap_or(false))
-                    || (single_label
-                        && !hs.eq_ignore_ascii_case("localhost")
-                        && !hs.contains('{')
-                        && !hs.contains('$'));
+                // `[2001:db8::1]`: IPv6 literals are reported by the IPv6 scan, not as hosts.
+                let ipv6_literal = hs.starts_with('[');
+                // A single label is a host name only if it looks like one (`db01`, `prod-db`).
+                let hostlike_label = single_label
+                    && hs.len() >= 3
+                    && (hs.contains('-') || hs.chars().any(|c| c.is_ascii_digit()))
+                    && hs
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+                let internal = !ipv6_literal
+                    && (self.cfg.is_internal_host(hs)
+                        || (is_ip
+                            && parse_ipv4(hs)
+                                .map(|ip| self.cfg.is_private_ipv4(ip))
+                                .unwrap_or(false))
+                        || hostlike_label);
                 if internal && !is_ip {
                     out.push(cand(
                         h.start(),
@@ -408,7 +586,11 @@ impl Detector for InfraDetector {
                     .unwrap_or("");
                 let db_scheme = DB_SCHEMES.contains(&scheme.as_str())
                     || text[..c.get(0).map(|m| m.start()).unwrap_or(0)].ends_with("jdbc:");
-                if db_scheme && !seg.is_empty() && !seg.contains('{') && !seg.contains('$') {
+                if db_scheme
+                    && !seg.is_empty()
+                    && !seg.contains(['{', '$', '<'])
+                    && !seg.chars().all(|c| c.is_ascii_digit())
+                {
                     let start = path.start() + 1;
                     out.push(cand(
                         start,
@@ -424,6 +606,18 @@ impl Detector for InfraDetector {
 
         for re in &self.svc {
             for m in re.find_iter(text) {
+                out.push(cand(
+                    m.start(),
+                    m.end(),
+                    EntityType::Svc,
+                    None,
+                    "infra.svc",
+                    58,
+                ));
+            }
+        }
+        for c in self.svc_context.captures_iter(text) {
+            if let Some(m) = c.get(1).or_else(|| c.get(2)) {
                 out.push(cand(
                     m.start(),
                     m.end(),
@@ -489,11 +683,47 @@ impl Detector for InfraDetector {
             if parse_ipv4(s).is_some() {
                 continue;
             }
-            // Skip file names and dotted identifiers that merely end in an internal-looking label.
-            if byte_before(text, m.start()).is_some_and(|c| c == '@' || c == '/' && false) {
+            // A match inside a longer identifier (`client_1.local_addr`) is not a host.
+            let prev = byte_before(text, m.start());
+            let next = byte_after(text, m.end());
+            if prev.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '@'))
+                || next.is_some_and(|c| {
+                    c.is_alphanumeric()
+                        || matches!(c, '_' | '(' | '[')
+                        || c == '.'
+                            && text[m.end() + 1..]
+                                .chars()
+                                .next()
+                                .is_some_and(|d| d.is_alphanumeric())
+                })
+            {
                 continue;
             }
-            if self.cfg.is_internal_host(s) {
+            // An unquoted dotted chain on a built-in zone is member access (`crypto.packet.local`);
+            // a host name there appears in quotes, after `://` or `=`, or in prose.
+            let configured = self.cfg.internal_zones.iter().any(|z| {
+                s.eq_ignore_ascii_case(z) || s.to_ascii_lowercase().ends_with(&format!(".{z}"))
+            });
+            let hostlike_first = s
+                .split('.')
+                .next()
+                .is_some_and(|l| l.contains('-') && l.chars().any(|c| c.is_ascii_alphabetic()));
+            // After whitespace the previous word decides: prose ("на db01.local") continues a word,
+            // code (`= crypto.header.local;`, `(a.local`) follows an operator or bracket.
+            let after_word = |t: &str| {
+                t.trim_end().chars().next_back().is_some_and(|c| {
+                    c.is_alphanumeric() || matches!(c, ':' | '-' | '\u{2014}' | '\u{2013}')
+                })
+            };
+            let quoted_ctx = prev.is_none_or(|c| {
+                (c.is_whitespace() && after_word(&text[..m.start()]) && next != Some(';'))
+                    || matches!(c, '"' | '\'' | '`' | '/' | ':' | ',' | '<' | '>')
+                    || (c == '=' && !matches!(next, Some(';')))
+            });
+            if !configured && !hostlike_first && !quoted_ctx {
+                continue;
+            }
+            if self.cfg.is_internal_host_in_text(s) {
                 out.push(cand(
                     m.start(),
                     m.end(),
@@ -519,6 +749,7 @@ pub struct PiiDetector {
     snils: Regex,
     digits10_12: Regex,
     card: Regex,
+    card_bare: Regex,
     passport: Regex,
     acct: Regex,
 }
@@ -541,8 +772,11 @@ impl PiiDetector {
             .expect("static regex"),
             snils: Regex::new(r"\b\d{3}-\d{3}-\d{3}[ \-]\d{2}\b").expect("static regex"),
             digits10_12: Regex::new(r"\b\d{10}(?:\d{2})?\b").expect("static regex"),
-            card: Regex::new(r"\b\d{4}(?:[ \-]?\d{4}){2,3}(?:[ \-]?\d{1,3})?\b")
+            // 4-4-4-4 (or Amex 4-6-5) with separators: a card number by format alone.
+            card: Regex::new(r"\b\d{4}(?:[ \-]\d{4}){3}\b|\b3[47]\d{2}[ \-]\d{6}[ \-]\d{5}\b")
                 .expect("static regex"),
+            // unseparated digits: only with a known issuer prefix and card context
+            card_bare: Regex::new(r"\b\d{13,19}\b").expect("static regex"),
             passport: Regex::new(r"\b\d{2}\s?\d{2}\s?\d{6}\b").expect("static regex"),
             acct: Regex::new(r"\b\d{20}\b").expect("static regex"),
         }
@@ -652,8 +886,25 @@ impl Detector for PiiDetector {
                 80,
             ));
         }
-        for re in [&self.phone_ru, &self.phone_intl] {
+        for (re, intl) in [(&self.phone_ru, false), (&self.phone_intl, true)] {
             for m in re.find_iter(text) {
+                // an international number is written in groups; one hyphen is a numeric literal
+                if intl
+                    && m.as_str()
+                        .chars()
+                        .filter(|c| c.is_whitespace() || matches!(c, '-' | '(' | ')'))
+                        .count()
+                        < 2
+                {
+                    continue;
+                }
+                // a number inside a longer numeric literal (`+292277026596-12`) is not a phone
+                if byte_after(text, m.end())
+                    .is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '.')
+                    || byte_before(text, m.start()).is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
                 out.push(cand(
                     m.start(),
                     m.end(),
@@ -684,6 +935,40 @@ impl Detector for PiiDetector {
                     EntityType::Inn,
                     None,
                     "pii.inn",
+                    75,
+                ));
+            }
+        }
+        for m in self.card_bare.find_iter(text) {
+            let v = m.as_str();
+            let iin_ok = matches!(v.as_bytes()[0], b'2'..=b'6');
+            let adjacent = byte_before(text, m.start())
+                .is_some_and(|c| c == '.' || c == '-' || c == '_' || c == ':' && false);
+            if iin_ok
+                && !adjacent
+                && luhn_ok(v)
+                && context_before(
+                    text,
+                    m.start(),
+                    &[
+                        "card",
+                        "карт",
+                        "visa",
+                        "mastercard",
+                        "pan ",
+                        "pan:",
+                        "cc ",
+                        "cc:",
+                        "cc=",
+                    ],
+                )
+            {
+                out.push(cand(
+                    m.start(),
+                    m.end(),
+                    EntityType::Card,
+                    None,
+                    "pii.card",
                     75,
                 ));
             }
@@ -1343,6 +1628,114 @@ mod tests {
             f.iter().filter(|(t, _)| *t == EntityType::System).count(),
             1
         );
+    }
+
+    // REQ: DET-05 — constructs found as false positives on 1.8M lines of open-source code.
+    #[test]
+    fn ordinary_code_is_not_sensitive() {
+        let code = [
+            "    password: String,",
+            "    tokens: TokenStream,",
+            "token: Option<Token>,",
+            "Secret: FromRef<S>,",
+            "let t = Token::String(field1);",
+            "sig.fn_token.span = sig.asyncness.take().unwrap().span;",
+            "generics.lt_token = Some(Token![<]);",
+            "///       token          = 1*tchar",
+            "let a = self.engine.internal;",
+            "let b = listener.local;",
+            "let p = client_1.local_addr().unwrap();",
+            "let e = crypto.header.local;",
+            "const X: u64 = 2251799813685228;",
+            "let big = 1072319116312658;",
+            "let dt = +292277026596-12;",
+            "let u = \"http://[2001:db8::1]:8080/\";",
+            "let u = \"http://username:password@example.org/\";",
+            "let svc_err = Error::new_user_service(recvd);",
+            "let svc_fn = service_fn(|_| async {});",
+            "let tok = os.environ[\"TOKEN\"]",
+            "password = args.password",
+            "PASSWORD: ${DB_PASS}",
+            "token = $TOKEN",
+        ];
+        for line in code {
+            let f = found(line);
+            assert!(f.is_empty(), "false positive on {line:?}: {f:?}");
+        }
+    }
+
+    // REQ: DET-04 — forms found as missed on the synthetic positive corpus.
+    #[test]
+    fn secret_forms_from_the_positive_corpus() {
+        let cases = [
+            ("password := \"Jd8@2jd82k\"", "Jd8@2jd82k"),
+            (
+                "os.environ.setdefault(\"DB_PASSWORD\", \"Jd8@2jd82k\")",
+                "Jd8@2jd82k",
+            ),
+            (
+                "    - name: SECRET_KEY\n      value: \"hctjoUi&Fla7C62857\"",
+                "hctjoUi&Fla7C62857",
+            ),
+            (
+                "Пароль от УЗ: OhG-jxCKiXU1WB307, никому не передавать",
+                "OhG-jxCKiXU1WB307",
+            ),
+            ("пароль от базы - FzVj!jOL34", "FzVj!jOL34"),
+            ("Логин: svc_app, пароль: Jd8@2jd82k", "Jd8@2jd82k"),
+            ("токен: ab12cd34ef56", "ab12cd34ef56"),
+            (
+                "DATABASE_URL=postgresql://svc_x:$0bZVG048OQL7885@db-prod01.corp.local:5432/p",
+                "$0bZVG048OQL7885",
+            ),
+            (
+                "DATABASE_URL=postgresql://svc_x:-x34Z5QFiaQcq2583@db-prod01.corp.local:5432/p",
+                "-x34Z5QFiaQcq2583",
+            ),
+            (
+                "key = \"AIzaSokrEgTR0cD0x6TE8XLsiL5xzMF6hBu56K-\"",
+                "AIzaSokrEgTR0cD0x6TE8XLsiL5xzMF6hBu56K-",
+            ),
+        ];
+        for (text, value) in cases {
+            let f = found(text);
+            assert!(
+                f.iter()
+                    .any(|(t, v)| *t == EntityType::Secret && v == value),
+                "{text:?} -> {f:?}"
+            );
+        }
+        for text in [
+            "mysql -u svc_etl -p",
+            "user svc_payment",
+            "login: svc_billing",
+            "DB_USER=svc_reports",
+        ] {
+            assert!(
+                found(text)
+                    .iter()
+                    .any(|(t, v)| *t == EntityType::Svc && v.starts_with("svc_")),
+                "{text:?}"
+            );
+        }
+    }
+
+    // REQ: DET-04 — unquoted card numbers need a format or context.
+    #[test]
+    fn card_numbers_need_format_or_context() {
+        assert!(
+            found("n = 4539148803436467").is_empty(),
+            "a bare Luhn-valid integer is not a card"
+        );
+        assert!(found("карта 4539148803436467 срок")
+            .iter()
+            .any(|(t, _)| *t == EntityType::Card));
+        assert!(found("card: 4539 1488 0343 6467")
+            .iter()
+            .any(|(t, _)| *t == EntityType::Card));
+        assert!(found("amex 3782 822463 10005")
+            .iter()
+            .any(|(t, _)| *t == EntityType::Card));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 pub mod anthropic;
 pub mod audit;
 pub mod bundle_loader;
+pub mod check;
 pub mod common;
 pub mod config;
 pub mod engine;

@@ -5,7 +5,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 fail=0
-for s in client-claude.sh client-codex.sh client-qwen.sh client-gemini.sh client-opencode.sh client-aider.sh client-continue.sh client-cline.sh; do
+for s in client-claude.sh client-claude-files.sh client-codex.sh client-qwen.sh client-gemini.sh client-opencode.sh client-aider.sh client-continue.sh client-cline.sh; do
   echo "== $s"
   ./"$s" || { echo "FAILED: $s"; fail=1; }
 done

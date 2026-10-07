@@ -18,8 +18,12 @@
 - `aegis-bench load`: нагрузочный стенд по настоящему HTTP (добавка ко времени до первого байта, поток запросов, одновременные потоки); в CI.
 - В CI: сборка образа, запуск его read-only без привилегий, `helm lint` и `helm template`.
 
+- `scripts/client-claude-files.sh`: сценарий из концепции с настоящим Claude Code (секрет возвращается в файл-источник, в другой файл не попадает).
 - `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
+
+- `aegis-gateway check <config>`: проверка конфигурации, ключей, провайдеров, бандла, аудита и портов до запуска; значений не печатает; код выхода 0/1.
+- Защита от перегрузки и зависшего провайдера: `max_concurrent_requests` (503 с `Retry-After` до чтения тела), `upstream_connect_timeout_secs`, `upstream_read_timeout_secs` (502).
 
 ### Исправлено
 - Строка запроса (`/v1/messages?beta=true` у Claude Code) терялась по дороге к провайдеру.

@@ -64,6 +64,15 @@ pub struct ServerConfig {
     pub audit_required: bool,
     #[serde(default = "d_queue")]
     pub audit_queue: usize,
+    /// Requests in flight; more are refused with 503 and `Retry-After`.
+    #[serde(default = "d_max_in_flight")]
+    pub max_concurrent_requests: usize,
+    /// Seconds to connect to a provider.
+    #[serde(default = "d_connect")]
+    pub upstream_connect_timeout_secs: u64,
+    /// Seconds a provider may stay silent (before the answer or between chunks of a stream).
+    #[serde(default = "d_read")]
+    pub upstream_read_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +91,16 @@ pub struct BundleConf {
 
 fn d_reload() -> u64 {
     15
+}
+
+fn d_max_in_flight() -> usize {
+    crate::server::DEFAULT_MAX_IN_FLIGHT
+}
+fn d_connect() -> u64 {
+    10
+}
+fn d_read() -> u64 {
+    300
 }
 
 fn d_queue() -> usize {
@@ -342,6 +361,16 @@ impl ServerConfig {
         st.openai = openai;
         st.gemini = gemini;
         st.bundle_required = self.bundle.is_some();
+        if self.max_concurrent_requests == 0 {
+            return Err(ConfigError::Invalid(
+                "max_concurrent_requests must be at least 1".into(),
+            ));
+        }
+        st.limiter = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_requests));
+        st.http = crate::server::client_with(
+            std::time::Duration::from_secs(self.upstream_connect_timeout_secs.max(1)),
+            std::time::Duration::from_secs(self.upstream_read_timeout_secs.max(1)),
+        );
         Ok(st)
     }
 }
@@ -370,6 +399,28 @@ mod tests {
             st.keys.load().contains_key("ab12"),
             "hashes are matched case-insensitively"
         );
+    }
+
+    // REQ: NFR-13
+    #[test]
+    fn limits_have_defaults_and_are_validated() {
+        let c: ServerConfig = serde_json::from_str(CFG).unwrap();
+        assert_eq!(c.max_concurrent_requests, 1000);
+        assert_eq!(
+            (
+                c.upstream_connect_timeout_secs,
+                c.upstream_read_timeout_secs
+            ),
+            (10, 300)
+        );
+        let bad: ServerConfig = serde_json::from_str(&CFG.replace(
+            "\"virtual_keys\"",
+            "\"max_concurrent_requests\": 0, \"virtual_keys\"",
+        ))
+        .unwrap();
+        assert!(bad
+            .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
+            .is_err());
     }
 
     // REQ: PRO-15 — providers are independent: a config with one OpenAI-compatible provider and

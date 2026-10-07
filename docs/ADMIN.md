@@ -36,13 +36,22 @@ aegis-gateway /etc/aegis/gateway.json
 | `anthropic_base_url` (прежнее имя `upstream_base_url`), `anthropic_auth` | Провайдер Anthropic Messages и способ передачи ключа |
 | `openai_base_url`, `openai_api_prefix`, `openai_auth` | OpenAI-совместимый провайдер: Chat Completions, Responses, Completions, Embeddings |
 | `gemini_base_url` | Google Gemini API |
-
+| `max_concurrent_requests` | Запросов одновременно (по умолчанию 1000, потоки считаются на всё время потока). Лишний запрос получает 503 с `Retry-After: 1` до чтения тела |
+| `upstream_connect_timeout_secs`, `upstream_read_timeout_secs` | Ожидание соединения с провайдером (10) и молчания провайдера до ответа и между кусками потока (300). По истечении — 502 |
 | `tenant` | Идентификатор тенанта |
 | `bundle` | `source` (путь или URL), `cache_path`, `trusted_keys` (hex открытых ключей), `reload_seconds` (1–30) |
 | `audit_path`, `audit_required`, `audit_queue` | Файл аудита JSONL (по умолчанию stdout), остановка трафика при переполнении очереди, размер очереди |
 | `internal_zones`, `company_ranges`, `service_account_patterns`, `employees`, `terms`, `virtual_keys` | Те же настройки без бандла. С бандлом их задаёт политика |
 
 Нужен хотя бы один провайдер. Подробности, адреса и примеры для DeepSeek, Qwen, Kimi, GLM, Azure, Ollama и других — в [PROVIDERS.md](PROVIDERS.md). Файл примера — [examples/gateway.json](../examples/gateway.json).
+
+### Проверка конфигурации перед запуском
+
+```
+aegis-gateway check /etc/aegis/gateway.json
+```
+
+Команда ничего не запускает и не открывает порты надолго. Она проверяет: разбор конфигурации; ключи `K_t` и `K_audit` (длина, различие); провайдеров и их ключи; бандл (загрузка, подпись, срок: предупреждение, если до конца меньше 14 дней или взят кэш); запись в файл аудита; свободны ли порты. Выводит `ok`, `warn` или `FAIL` по каждому пункту, значения ключей и пароли в адресах не печатает. Код выхода 0, если нет `FAIL`, иначе 1. Подходит как шаг CI, `initContainer` или проверка перед перезапуском. Предупреждения: открытый наружу порт без TLS, служебный порт на всех интерфейсах.
 
 ### Проверка до внедрения
 
@@ -113,7 +122,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 
 ## 5. Метрики (служебный порт, `/metrics`)
 
-`aegis_requests_total{decision}`, `aegis_entities_total{class}`, `aegis_denied_total{rule,sink}`, `aegis_stage_ms{stage}` (parse, detect, transform), `aegis_detect_blocks_total{result}`, `aegis_pseudonym_collisions_total`, `aegis_bundle_applied_total`, `aegis_bundle_errors_total{reason}`, `aegis_bundle_info{version,signer}`, `aegis_bundle_expires_in_seconds`, `aegis_audit_overflow_total`.
+`aegis_requests_total{decision}` (`allow`, `rejected`, `overloaded`, `upstream_error`, `fail_closed`), `aegis_entities_total{class}`, `aegis_denied_total{rule,sink}`, `aegis_stage_ms{stage}` (parse, detect, transform), `aegis_detect_blocks_total{result}`, `aegis_pseudonym_collisions_total`, `aegis_bundle_applied_total`, `aegis_bundle_errors_total{reason}`, `aegis_bundle_info{version,signer}`, `aegis_bundle_expires_in_seconds`, `aegis_audit_overflow_total`.
 
 Значений, путей и текста запросов в метриках нет.
 
@@ -132,6 +141,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 - Только режим без состояния: `previous_response_id`, `item_reference`, `store: true`, Assistants, Files и Batches отклоняются.
 - Серверные инструменты провайдера (web search, code execution, MCP connector, `enable_search` у Qwen, `$web_search` у Kimi, `retrieval` у GLM, `googleSearch` у Gemini) отключены.
 - Сжатые тела запросов (`Content-Encoding`) отклоняются: 415.
+- Gateway слушает обычный HTTP: TLS завершайте на балансировщике или ингрессе, основной порт не выставляйте наружу без него. Собственного TLS нет.
 - Один провайдер на семейство протоколов в одном экземпляре.
 - Изображения и PDF заменяются текстовым уведомлением.
 - Cursor, Windsurf и встроенные подсказки GitHub Copilot ходят через серверы вендоров и в gateway не направляются; для них действует только блокировка на периметре (`deploy/egress`). Полный список клиентов — в [CLIENTS.md](CLIENTS.md).
@@ -146,6 +156,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 | `scripts/demo.sh` | Клиент, Aegis и «провайдер», который печатает полученное: что видит провайдер, что возвращается клиенту |
 | `scripts/smoke.sh` | Настоящие бинарники: бандл, ключи, горячая замена, повреждённый бандл, аудит без значений, SIGTERM во время потока |
 | `scripts/clients.sh` | Настоящие Claude Code, Codex, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (нужны Node.js и npm; Aider ставится через `uv`). Не установленный клиент пропускается |
+| `scripts/client-claude-files.sh` | Сценарий из концепции с настоящим Claude Code: секрет возвращается в файл, откуда он прочитан, и не попадает в другой файл |
 | `scripts/trace.sh` | Какие требования спецификации покрыты тестами |
 | `aegis-bench load --dir <исходники>` | Добавка ко времени до первого байта, поток запросов, одновременные потоки |
 | `aegis-bench fp`, `recall`, `perf` | Ложные срабатывания, полнота, задержка преобразования |

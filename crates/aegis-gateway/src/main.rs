@@ -14,6 +14,14 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 
 #[tokio::main]
 async fn main() {
+    // `aegis-gateway check <config>`: find what would stop the gateway, change nothing.
+    if std::env::args().nth(1).as_deref() == Some("check") {
+        let Some(path) = std::env::args().nth(2) else {
+            fail("usage: aegis-gateway check <config.json>")
+        };
+        let ok = aegis_gateway::check::run(&path).await;
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     // SEC-02: before any request data exists in memory
     let h = aegis_gateway::harden::apply();
     tracing_subscriber::fmt()

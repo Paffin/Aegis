@@ -26,10 +26,24 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// NFR-07
 pub const MAX_BODY: usize = 64 * 1024 * 1024;
+
+/// NFR-04 asks for 200 streams per node; the default leaves room above that.
+pub const DEFAULT_MAX_IN_FLIGHT: usize = 1000;
+
+/// HTTP client of the provider calls: a provider that does not answer or stalls mid-stream
+/// must not hold a connection (and its memory) forever. The read timeout is per read: a long
+/// stream is fine as long as it keeps moving.
+pub fn client_with(connect: Duration, read: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .read_timeout(read)
+        .build()
+        .unwrap_or_default()
+}
 
 #[derive(Clone, Debug)]
 pub struct VKey {
@@ -173,6 +187,9 @@ pub struct AppState {
     pub bundle: std::sync::Mutex<Option<BundleStatus>>,
     pub bundle_required: bool,
     pub http: reqwest::Client,
+    /// Requests in flight (a request holds its permit until its response body is over): beyond
+    /// the limit a request is refused at once instead of piling up bodies in memory.
+    pub limiter: Arc<tokio::sync::Semaphore>,
     pub audit: Audit,
     pub metrics: Arc<Metrics>,
     counter: AtomicU64,
@@ -204,7 +221,8 @@ impl AppState {
             keys: arc_swap::ArcSwap::from_pointee(keys),
             bundle: std::sync::Mutex::new(None),
             bundle_required: false,
-            http: reqwest::Client::new(),
+            http: client_with(Duration::from_secs(10), Duration::from_secs(300)),
+            limiter: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
             counter: AtomicU64::new(0),
@@ -422,7 +440,45 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1beta/models/*rest", any(gemini_model))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), limit))
         .with_state(state)
+}
+
+/// Refuse a request beyond `max_concurrent_requests` before its body is read, and keep the
+/// permit until the response body has been sent (a stream counts for its whole life).
+async fn limit(
+    State(st): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let Ok(permit) = st.limiter.clone().try_acquire_owned() else {
+        st.metrics
+            .inc("aegis_requests_total", &[("decision", "overloaded")], 1);
+        let proto = if path.starts_with("/v1beta/") || path.contains(":generateContent") {
+            Protocol::Gemini
+        } else if path.starts_with("/v1/messages") {
+            Protocol::Anthropic
+        } else {
+            Protocol::OpenAiChat
+        };
+        let mut r = err_response_for(
+            proto,
+            503,
+            "overloaded_error",
+            "Aegis: слишком много одновременных запросов, повторите позже",
+        );
+        r.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        return r;
+    };
+    let resp = next.run(req).await;
+    let (parts, body) = resp.into_parts();
+    let held = body.into_data_stream().map(move |chunk| {
+        let _held = &permit;
+        chunk
+    });
+    Response::from_parts(parts, Body::from_stream(held))
 }
 
 /// OBS-04, OBS-01: served on a separate port (SEC-06).

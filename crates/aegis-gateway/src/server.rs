@@ -45,6 +45,26 @@ pub fn client_with(connect: Duration, read: Duration) -> reqwest::Client {
         .unwrap_or_default()
 }
 
+/// SEC-05: the provider connection trusts only this CA (PEM) instead of the public roots.
+pub fn client_with_ca(
+    connect: Duration,
+    read: Duration,
+    ca_pem: &[u8],
+) -> Result<reqwest::Client, String> {
+    let certs = reqwest::Certificate::from_pem_bundle(ca_pem).map_err(|e| e.to_string())?;
+    if certs.is_empty() {
+        return Err("no certificate in the file".into());
+    }
+    let mut b = reqwest::Client::builder()
+        .connect_timeout(connect)
+        .read_timeout(read)
+        .tls_built_in_root_certs(false);
+    for c in certs {
+        b = b.add_root_certificate(c);
+    }
+    b.build().map_err(|e| e.to_string())
+}
+
 #[derive(Clone, Debug)]
 pub struct VKey {
     pub principal: Principal,

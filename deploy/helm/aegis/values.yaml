@@ -16,6 +16,9 @@ config:
   tenant: default
   auditPath: /var/log/aegis/audit.jsonl
   auditRequired: false
+  tls:                     # TLS on the gateway port (SEC-05); a Secret with tls.crt, tls.key and, for mTLS, ca.crt
+    secretName: ""         # empty: plain HTTP, terminate TLS at the ingress
+    clientCA: false        # true: clients must present a certificate signed by ca.crt
   bundle:
     source: ""             # path or https URL of the signed bundle
     trustedKeys: []        # hex ed25519 public keys allowed to sign bundles

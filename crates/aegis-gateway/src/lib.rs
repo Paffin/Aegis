@@ -18,3 +18,4 @@ pub mod openai_embeddings;
 pub mod openai_responses;
 pub mod server;
 pub mod stream;
+pub mod tls;

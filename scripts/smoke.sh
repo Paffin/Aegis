@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: NFR-06, NFR-09, CFG-02, SEC-01
+# REQ: NFR-06, NFR-09, CFG-02, SEC-01, SEC-05
 # End-to-end smoke test with the real binaries: aegis CLI -> signed bundle -> aegis-gateway -> mock provider.
 # Checks: the bundle supplies policy and virtual keys, a provider never sees real values,
 # a new bundle (key revoked) takes effect without a restart, a corrupt bundle changes nothing,
@@ -109,4 +109,30 @@ wait $CURL || true
 if grep -q 'part5' "$W/stream.out" && grep -q 'message_stop' "$W/stream.out"; then echo "ok   in-flight stream completed after SIGTERM"; else echo "FAIL stream was cut: $(tr '\n' ' ' < "$W/stream.out" | head -c 300)"; exit 1; fi
 for i in $(seq 1 30); do kill -0 $GW 2>/dev/null || break; sleep 0.1; done
 if kill -0 $GW 2>/dev/null; then echo "FAIL gateway still running after the stream ended"; exit 1; else echo "ok   gateway exited after the stream finished"; fi
+
+# TLS and mTLS on the main port (SEC-05), with the real binary and certificates made by openssl
+T=$((PORT + 10))
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/ca.key" -out "$W/ca.pem" -subj "/CN=smoke-ca" -days 2 >/dev/null 2>&1
+mkleaf() { # name
+  openssl req -newkey rsa:2048 -nodes -keyout "$W/$1.key" -out "$W/$1.csr" -subj "/CN=$1" >/dev/null 2>&1
+  printf 'subjectAltName=IP:127.0.0.1\n' > "$W/$1.ext"
+  openssl x509 -req -in "$W/$1.csr" -CA "$W/ca.pem" -CAkey "$W/ca.key" -CAcreateserial -out "$W/$1.pem" -days 2 -extfile "$W/$1.ext" >/dev/null 2>&1
+}
+mkleaf server; mkleaf client
+cat > "$W/gw-tls.json" <<JSON
+{"listen":"127.0.0.1:$T","admin_listen":"127.0.0.1:$((T + 1))","anthropic_base_url":"http://127.0.0.1:$UP",
+ "virtual_keys":[{"sha256":"$(printf %s tlskey | sha256sum | cut -d' ' -f1)","principal":"u:tls"}],
+ "tls":{"cert_file":"$W/server.pem","key_file":"$W/server.key","client_ca_file":"$W/ca.pem"}}
+JSON
+if ! $BIN/aegis-gateway check "$W/gw-tls.json" > "$W/check-tls.log" 2>&1; then echo "FAIL check with tls"; cat "$W/check-tls.log"; exit 1; fi
+grep -q "mTLS" "$W/check-tls.log" && echo "ok   check sees TLS and mTLS"
+$BIN/aegis-gateway "$W/gw-tls.json" > "$W/gw-tls.log" 2>&1 &
+GT=$!
+sleep 1.5
+tls_req() { curl -s -m 5 -o /dev/null -w '%{http_code}' "$@" -X POST -H "x-api-key: tlskey" "https://127.0.0.1:$T/v1/messages" \
+  -d '{"model":"m","messages":[{"role":"user","content":"hi"}]}'; }
+check "mTLS: a client with a certificate is served"      "$(tls_req --cacert "$W/ca.pem" --cert "$W/client.pem" --key "$W/client.key")" 200
+check "mTLS: a client without a certificate is refused"  "$(tls_req --cacert "$W/ca.pem" || true)" 000
+check "TLS: an unknown CA is refused"                    "$(tls_req --cert "$W/client.pem" --key "$W/client.key" || true)" 000
+kill $GT 2>/dev/null || true
 echo "SMOKE OK"

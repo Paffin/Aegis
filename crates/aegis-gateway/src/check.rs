@@ -192,8 +192,35 @@ pub async fn run(path: &str) -> bool {
             Err(e) => r.fail(format_args!("{name} порт {addr}: {e}")),
         }
     }
-    if !cfg.listen.starts_with("127.") && !cfg.listen.starts_with("localhost") {
-        r.warn("основной порт слушает не только локальный адрес: gateway говорит по обычному HTTP, TLS завершайте на балансировщике");
+    match &cfg.tls {
+        Some(t) => match crate::tls::server_config(t) {
+            Ok(_) => r.ok(format_args!(
+                "TLS на основном порту: сертификат и ключ читаются{}",
+                if t.client_ca_file.is_some() {
+                    ", клиенты по сертификату (mTLS)"
+                } else {
+                    ""
+                }
+            )),
+            Err(e) => r.fail(format_args!("tls: {e}")),
+        },
+        None if !cfg.listen.starts_with("127.") && !cfg.listen.starts_with("localhost") => {
+            r.warn("основной порт слушает не только локальный адрес: gateway говорит по обычному HTTP, TLS завершайте на балансировщике или включите `tls`");
+        }
+        None => {}
+    }
+    if let Some(p) = &cfg.upstream_ca_file {
+        match std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| {
+            crate::server::client_with_ca(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+                &b,
+            )
+            .map(|_| ())
+        }) {
+            Ok(()) => r.ok(format_args!("провайдеры доверяют только CA из {p}")),
+            Err(e) => r.fail(format_args!("upstream_ca_file {p}: {e}")),
+        }
     }
     if cfg.admin_listen.starts_with("0.0.0.0") || cfg.admin_listen.starts_with("[::]") {
         r.warn("служебный порт (/metrics, /readyz) слушает все адреса: закройте его от клиентов сетевой политикой");

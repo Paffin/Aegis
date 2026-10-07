@@ -67,6 +67,12 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// SEC-05: serve TLS (1.2+) on `listen`; with `client_ca_file` clients need a certificate (mTLS).
+    #[serde(default)]
+    pub tls: Option<crate::tls::TlsFiles>,
+    /// SEC-05: the providers' certificates must chain to this CA (PEM) and no public one.
+    #[serde(default)]
+    pub upstream_ca_file: Option<String>,
     /// DET-03: memory for the detection cache, in megabytes.
     #[serde(default = "d_cache_mb")]
     pub detect_cache_mb: usize,
@@ -400,10 +406,22 @@ impl ServerConfig {
             ));
         }
         st.limiter = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_concurrent_requests));
-        st.http = crate::server::client_with(
+        let (connect, read) = (
             std::time::Duration::from_secs(self.upstream_connect_timeout_secs.max(1)),
             std::time::Duration::from_secs(self.upstream_read_timeout_secs.max(1)),
         );
+        st.http = match &self.upstream_ca_file {
+            Some(p) => {
+                let pem = std::fs::read(p)
+                    .map_err(|e| ConfigError::Invalid(format!("upstream_ca_file {p}: {e}")))?;
+                crate::server::client_with_ca(connect, read, &pem)
+                    .map_err(|e| ConfigError::Invalid(format!("upstream_ca_file {p}: {e}")))?
+            }
+            None => crate::server::client_with(connect, read),
+        };
+        if let Some(t) = &self.tls {
+            crate::tls::server_config(t).map_err(|e| ConfigError::Invalid(format!("tls: {e}")))?;
+        }
         Ok(st)
     }
 }

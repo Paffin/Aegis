@@ -13,6 +13,10 @@ sha2.workspace = true
 tokio.workspace = true
 axum.workspace = true
 reqwest.workspace = true
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio", "server", "server-graceful", "service"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 futures-util.workspace = true
 bytes.workspace = true
 tracing.workspace = true
@@ -27,6 +31,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 tracing-subscriber.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }

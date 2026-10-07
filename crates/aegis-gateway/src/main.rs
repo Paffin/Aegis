@@ -114,9 +114,20 @@ async fn main() {
         tracing::warn!("shutdown grace period of 10 minutes elapsed");
         std::process::exit(0);
     });
-    let _ = axum::serve(main_l, app(state))
-        .with_graceful_shutdown(async move {
-            let _ = rx1.changed().await;
-        })
-        .await;
+    let stop = async move {
+        let _ = rx1.changed().await;
+    };
+    match &cfg.tls {
+        Some(t) => {
+            let tls = aegis_gateway::tls::reloading(t.clone(), Duration::from_secs(30))
+                .unwrap_or_else(|e| fail(format!("tls: {e}")));
+            tracing::info!(mtls = t.client_ca_file.is_some(), "TLS on the main port");
+            aegis_gateway::tls::serve(main_l, app(state), tls, stop).await;
+        }
+        None => {
+            let _ = axum::serve(main_l, app(state))
+                .with_graceful_shutdown(stop)
+                .await;
+        }
+    }
 }

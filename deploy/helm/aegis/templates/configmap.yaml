@@ -35,4 +35,13 @@ data:
         "trusted_keys": {{ required "config.bundle.trustedKeys must list at least one signing key" .Values.config.bundle.trustedKeys | toJson }},
         "reload_seconds": {{ .Values.config.bundle.reloadSeconds }}
       }
+      {{- if .Values.config.tls.secretName }},
+      "tls": {
+        "cert_file": "/etc/aegis-tls/tls.crt",
+        "key_file": "/etc/aegis-tls/tls.key"
+        {{- if .Values.config.tls.clientCA }},
+        "client_ca_file": "/etc/aegis-tls/ca.crt"
+        {{- end }}
+      }
+      {{- end }}
     }

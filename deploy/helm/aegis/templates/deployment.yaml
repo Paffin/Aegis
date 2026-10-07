@@ -46,11 +46,18 @@ spec:
             - { name: config, mountPath: /etc/aegis, readOnly: true }
             - { name: state, mountPath: /var/lib/aegis }
             - { name: logs, mountPath: /var/log/aegis }
+            {{- if .Values.config.tls.secretName }}
+            - { name: tls, mountPath: /etc/aegis-tls, readOnly: true }
+            {{- end }}
       volumes:
         - name: config
           configMap: { name: {{ include "aegis.name" . }}-config }
         # in memory: bundle cache and audit survive a container restart but not a node loss
         - name: state
           emptyDir: { medium: Memory, sizeLimit: 64Mi }
+        {{- if .Values.config.tls.secretName }}
+        - name: tls
+          secret: { secretName: {{ .Values.config.tls.secretName }} }
+        {{- end }}
         - name: logs
           emptyDir: { sizeLimit: 1Gi }

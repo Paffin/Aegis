@@ -6,8 +6,11 @@
 use crate::anthropic::{transform_request, transform_response, ReqMeta};
 use crate::audit::{Audit, AuditEvent, EventMeta};
 use crate::engine::Engine;
+use crate::gemini::{self, GeminiStreamTransformer};
 use crate::metrics::Metrics;
 use crate::openai_chat::{self, ChatStreamTransformer};
+use crate::openai_completions::{self, CompletionsStreamTransformer};
+use crate::openai_embeddings;
 use crate::openai_responses::{self, ResponsesStreamTransformer};
 use crate::stream::StreamTransformer;
 use axum::body::Body;
@@ -55,18 +58,115 @@ pub struct Principal {
     pub groups: Vec<String>,
 }
 
+/// How the provider expects its credential (IAM-02).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Auth {
+    /// `x-api-key: <key>` (Anthropic).
+    XApiKey,
+    /// `Authorization: Bearer <key>` (OpenAI, vLLM, most gateways).
+    Bearer,
+    /// `api-key: <key>` (Azure OpenAI).
+    ApiKeyHeader,
+    /// `x-goog-api-key: <key>` (Gemini).
+    GoogApiKey,
+    /// Local models without credentials (Ollama, llama.cpp, vLLM without a key).
+    Nothing,
+}
+
+impl Auth {
+    pub fn parse(s: &str) -> Option<Auth> {
+        Some(match s {
+            "x-api-key" => Auth::XApiKey,
+            "bearer" => Auth::Bearer,
+            "api-key" => Auth::ApiKeyHeader,
+            "x-goog-api-key" => Auth::GoogApiKey,
+            "none" => Auth::Nothing,
+            _ => return None,
+        })
+    }
+}
+
 pub struct Upstream {
     pub base_url: String,
     /// Provider credentials stay inside Aegis (IAM-02).
     pub api_key: String,
+    pub auth: Auth,
+    /// Path before `/chat/completions` and the other OpenAI endpoints (`/v1` by default;
+    /// `/api/paas/v4` for Zhipu, `/api/v3` for Volcengine).
+    pub api_prefix: String,
+}
+
+impl Upstream {
+    pub fn with_prefix(mut self, prefix: &str) -> Self {
+        self.api_prefix = format!("/{}", prefix.trim_matches('/'));
+        if self.api_prefix == "/" {
+            self.api_prefix.clear();
+        }
+        self
+    }
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    pub fn anthropic(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            auth: Auth::XApiKey,
+            api_prefix: "/v1".into(),
+        }
+    }
+    pub fn openai(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            auth: Auth::Bearer,
+            api_prefix: "/v1".into(),
+        }
+    }
+    pub fn gemini(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            api_key: api_key.into(),
+            auth: Auth::GoogApiKey,
+            api_prefix: String::new(),
+        }
+    }
+
+    fn url(&self, path: &str, query: &str) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        if query.is_empty() {
+            format!("{base}{path}")
+        } else {
+            format!("{base}{path}?{query}")
+        }
+    }
+
+    /// IAM-02: the provider key is injected here and nowhere else.
+    fn authorize(&self, out: &mut reqwest::header::HeaderMap) {
+        let (name, value) = match self.auth {
+            Auth::XApiKey => ("x-api-key", self.api_key.clone()),
+            Auth::Bearer => ("authorization", format!("Bearer {}", self.api_key)),
+            Auth::ApiKeyHeader => ("api-key", self.api_key.clone()),
+            Auth::GoogApiKey => ("x-goog-api-key", self.api_key.clone()),
+            Auth::Nothing => return,
+        };
+        if let Ok(v) = reqwest::header::HeaderValue::from_str(&value) {
+            out.insert(reqwest::header::HeaderName::from_static(name), v);
+        }
+    }
 }
 
 pub struct AppState {
     /// Replaced atomically when a new bundle is applied (CFG-02).
     pub engine: arc_swap::ArcSwap<Engine>,
-    pub upstream: Upstream,
-    /// OpenAI-compatible provider (Chat Completions, Responses).
+    /// Anthropic Messages.
+    pub anthropic: Option<Upstream>,
+    /// OpenAI-compatible provider (Chat Completions, Responses, Completions, Embeddings).
     pub openai: Option<Upstream>,
+    /// Google Gemini (`generateContent`).
+    pub gemini: Option<Upstream>,
     /// SHA-256 (hex) of the virtual key → principal (IAM-03: keys are stored as hashes only).
     pub keys: arc_swap::ArcSwap<HashMap<String, VKey>>,
     /// Present once a bundle was applied; `bundle_required` makes its absence or expiry fail-closed (NFR-09).
@@ -79,7 +179,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(engine: Engine, upstream: Upstream, keys: HashMap<String, Principal>) -> Self {
+    pub fn new(
+        engine: Engine,
+        anthropic: Option<Upstream>,
+        keys: HashMap<String, Principal>,
+    ) -> Self {
         let keys = keys
             .into_iter()
             .map(|(h, p)| {
@@ -94,8 +198,9 @@ impl AppState {
             .collect();
         Self {
             engine: arc_swap::ArcSwap::from_pointee(engine),
-            upstream,
+            anthropic,
             openai: None,
+            gemini: None,
             keys: arc_swap::ArcSwap::from_pointee(keys),
             bundle: std::sync::Mutex::new(None),
             bundle_required: false,
@@ -150,31 +255,55 @@ pub fn hash_key(key: &str) -> String {
         .collect()
 }
 
-fn client_key(h: &HeaderMap) -> Option<String> {
-    if let Some(k) = h.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        return Some(k.to_string());
+/// The virtual key as the client sends it: every common SDK convention is accepted.
+fn client_key(h: &HeaderMap, query: &str) -> Option<String> {
+    for name in ["x-api-key", "x-goog-api-key", "api-key"] {
+        if let Some(k) = h.get(name).and_then(|v| v.to_str().ok()) {
+            return Some(k.to_string());
+        }
     }
-    h.get(header::AUTHORIZATION)
+    if let Some(k) = h
+        .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        return Some(k.to_string());
+    }
+    // Gemini clients may put the key into the query string; it is removed before forwarding.
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("key="))
         .map(String::from)
 }
 
+/// The query string without the client's key (never forwarded, never logged).
+fn forward_query(query: &str) -> String {
+    query
+        .split('&')
+        .filter(|kv| !kv.is_empty() && !kv.starts_with("key="))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn err_response_for(p: Protocol, status: u16, kind: &'static str, message: &str) -> Response {
-    if p != Protocol::Anthropic {
-        let body = crate::anthropic::Reject {
-            status,
-            kind,
-            message: message.to_string(),
-        }
-        .body_openai();
-        return Response::builder()
-            .status(status)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body))
-            .unwrap_or_default();
+    if p == Protocol::Anthropic {
+        return err_response(status, kind, message);
     }
-    err_response(status, kind, message)
+    let rej = crate::anthropic::Reject {
+        status,
+        kind,
+        message: message.to_string(),
+    };
+    let body = if p == Protocol::Gemini {
+        rej.body_gemini()
+    } else {
+        rej.body_openai()
+    };
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .unwrap_or_default()
 }
 
 fn err_response(status: u16, kind: &'static str, message: &str) -> Response {
@@ -193,14 +322,23 @@ pub enum Protocol {
     Anthropic,
     OpenAiChat,
     OpenAiResponses,
+    /// Legacy `/v1/completions` (autocomplete, fill-in-the-middle).
+    OpenAiCompletions,
+    /// `/v1/embeddings`: code indexing sends file contents here.
+    OpenAiEmbeddings,
+    Gemini,
 }
 
 impl Protocol {
-    fn path(&self) -> &'static str {
+    /// Path of the endpoint below the provider's API prefix.
+    fn endpoint(&self) -> &'static str {
         match self {
             Protocol::Anthropic => "/v1/messages",
-            Protocol::OpenAiChat => "/v1/chat/completions",
-            Protocol::OpenAiResponses => "/v1/responses",
+            Protocol::OpenAiChat => "/chat/completions",
+            Protocol::OpenAiResponses => "/responses",
+            Protocol::OpenAiCompletions => "/completions",
+            Protocol::OpenAiEmbeddings => "/embeddings",
+            Protocol::Gemini => "",
         }
     }
     fn route(&self) -> &'static str {
@@ -208,14 +346,36 @@ impl Protocol {
             Protocol::Anthropic => "anthropic-default",
             Protocol::OpenAiChat => "openai-chat-default",
             Protocol::OpenAiResponses => "openai-responses-default",
+            Protocol::OpenAiCompletions => "openai-completions-default",
+            Protocol::OpenAiEmbeddings => "openai-embeddings-default",
+            Protocol::Gemini => "gemini-default",
         }
     }
+}
+
+/// What a Gemini URL asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GemKind {
+    Generate,
+    Stream,
+    /// `countTokens`, `embedContent`, `batchEmbedContents`: the request is checked, the answer
+    /// carries no text.
+    Other,
+}
+
+struct GemTarget {
+    path: String,
+    query: String,
+    model: String,
+    kind: GemKind,
 }
 
 enum AnyStream<'e> {
     A(Box<StreamTransformer<'e>>),
     C(Box<ChatStreamTransformer<'e>>),
     R(Box<ResponsesStreamTransformer<'e>>),
+    P(Box<CompletionsStreamTransformer<'e>>),
+    G(Box<GeminiStreamTransformer<'e>>),
 }
 
 impl AnyStream<'_> {
@@ -224,6 +384,8 @@ impl AnyStream<'_> {
             AnyStream::A(t) => t.feed(b),
             AnyStream::C(t) => t.feed(b),
             AnyStream::R(t) => t.feed(b),
+            AnyStream::P(t) => t.feed(b),
+            AnyStream::G(t) => t.feed(b),
         }
     }
     fn finish(&mut self) -> Vec<u8> {
@@ -231,6 +393,8 @@ impl AnyStream<'_> {
             AnyStream::A(t) => t.finish(),
             AnyStream::C(t) => t.finish(),
             AnyStream::R(t) => t.finish(),
+            AnyStream::P(t) => t.finish(),
+            AnyStream::G(t) => t.finish(),
         }
     }
     fn ctx(&self) -> &crate::engine::RequestCtx {
@@ -238,6 +402,8 @@ impl AnyStream<'_> {
             AnyStream::A(t) => &t.ctx,
             AnyStream::C(t) => &t.ctx,
             AnyStream::R(t) => &t.ctx,
+            AnyStream::P(t) => &t.ctx,
+            AnyStream::G(t) => &t.ctx,
         }
     }
 }
@@ -247,8 +413,13 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/messages", any(messages))
         .route("/v1/chat/completions", any(chat_completions))
         .route("/v1/responses", any(responses))
+        .route("/v1/completions", any(completions))
+        .route("/v1/embeddings", any(embeddings))
         .route("/v1/messages/count_tokens", any(count_tokens))
         .route("/v1/models", get(models))
+        .route("/v1/models/*rest", any(models_item))
+        .route("/v1beta/models", get(gemini_list))
+        .route("/v1beta/models/*rest", any(gemini_model))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .with_state(state)
@@ -298,33 +469,13 @@ async fn not_found(uri: Uri) -> Response {
     )
 }
 
-fn upstream_headers(h: &HeaderMap, st: &AppState) -> reqwest::header::HeaderMap {
-    let mut out = reqwest::header::HeaderMap::new();
-    for name in [
-        "anthropic-version",
-        "anthropic-beta",
-        "content-type",
-        "accept",
-        "user-agent",
-    ] {
-        if let Some(v) = h.get(name) {
-            if let (Ok(n), Ok(v)) = (
-                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
-                reqwest::header::HeaderValue::from_bytes(v.as_bytes()),
-            ) {
-                out.insert(n, v);
-            }
-        }
-    }
-    if let Ok(v) = reqwest::header::HeaderValue::from_str(&st.upstream.api_key) {
-        out.insert("x-api-key", v);
-    }
-    out
+fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, Box<Response>> {
+    authenticate_q(h, st, "")
 }
 
-fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, Box<Response>> {
+fn authenticate_q(h: &HeaderMap, st: &AppState, query: &str) -> Result<Principal, Box<Response>> {
     let deny = |m: &str| Box::new(err_response(401, "authentication_error", m));
-    let key = client_key(h).ok_or_else(|| deny("Aegis: требуется виртуальный ключ"))?;
+    let key = client_key(h, query).ok_or_else(|| deny("Aegis: требуется виртуальный ключ"))?;
     let keys = st.keys.load();
     match keys.get(&hash_key(&key)) {
         Some(k) if k.expires.is_none_or(|e| e > now_unix()) => Ok(k.principal.clone()),
@@ -435,7 +586,7 @@ async fn messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::Anthropic, method, headers, body).await
+    proxy(st, Protocol::Anthropic, method, headers, body, None).await
 }
 
 async fn responses(
@@ -444,7 +595,7 @@ async fn responses(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiResponses, method, headers, body).await
+    proxy(st, Protocol::OpenAiResponses, method, headers, body, None).await
 }
 
 async fn chat_completions(
@@ -453,13 +604,96 @@ async fn chat_completions(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiChat, method, headers, body).await
+    proxy(st, Protocol::OpenAiChat, method, headers, body, None).await
+}
+
+async fn completions(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(st, Protocol::OpenAiCompletions, method, headers, body, None).await
+}
+
+async fn embeddings(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(st, Protocol::OpenAiEmbeddings, method, headers, body, None).await
+}
+
+/// `/v1beta/models/<model>:<action>` and `/v1/models/<model>:<action>`.
+async fn gemini_model(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    let path = uri.path().to_string();
+    let query = uri.query().unwrap_or("").to_string();
+    let last = path.rsplit('/').next().unwrap_or("").to_string();
+    let Some((model, action)) = last.split_once(':') else {
+        // Model information and listings carry no user data.
+        return passthrough_get(&st, &headers, &path, &query).await;
+    };
+    let kind = match action {
+        "generateContent" => GemKind::Generate,
+        "streamGenerateContent" => GemKind::Stream,
+        "countTokens" | "embedContent" | "batchEmbedContents" => GemKind::Other,
+        // Anything else (batches, cached contents, tuning) takes content Aegis cannot follow.
+        _ => {
+            return err_response_for(
+                Protocol::Gemini,
+                404,
+                "not_found_error",
+                &format!("Aegis: действие {action} не поддерживается"),
+            )
+        }
+    };
+    let target = GemTarget {
+        path,
+        query,
+        model: model.chars().take(80).collect(),
+        kind,
+    };
+    proxy(st, Protocol::Gemini, method, headers, body, Some(target)).await
+}
+
+async fn gemini_list(State(st): State<Arc<AppState>>, headers: HeaderMap, uri: Uri) -> Response {
+    passthrough_get(&st, &headers, uri.path(), uri.query().unwrap_or("")).await
+}
+
+/// `/v1/models` is shared by Anthropic, OpenAI and Gemini (v1) clients.
+async fn models(State(st): State<Arc<AppState>>, headers: HeaderMap, uri: Uri) -> Response {
+    passthrough_get(&st, &headers, uri.path(), uri.query().unwrap_or("")).await
+}
+
+/// `/v1/models/<id>`: a Gemini action or a model lookup.
+async fn models_item(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    if method == Method::POST {
+        return gemini_model(State(st), method, headers, uri, body).await;
+    }
+    passthrough_get(&st, &headers, uri.path(), uri.query().unwrap_or("")).await
 }
 
 fn upstream_for(st: &AppState, p: Protocol) -> Option<&Upstream> {
     match p {
-        Protocol::Anthropic => Some(&st.upstream),
-        Protocol::OpenAiChat | Protocol::OpenAiResponses => st.openai.as_ref(),
+        Protocol::Anthropic => st.anthropic.as_ref(),
+        Protocol::Gemini => st.gemini.as_ref(),
+        Protocol::OpenAiChat
+        | Protocol::OpenAiResponses
+        | Protocol::OpenAiCompletions
+        | Protocol::OpenAiEmbeddings => st.openai.as_ref(),
     }
 }
 
@@ -473,9 +707,8 @@ fn provider_headers(h: &HeaderMap, p: Protocol, up: &Upstream) -> reqwest::heade
             "accept",
             "user-agent",
         ],
-        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
-            &["openai-beta", "content-type", "accept", "user-agent"]
-        }
+        Protocol::Gemini => &["content-type", "accept", "user-agent"],
+        _ => &["openai-beta", "content-type", "accept", "user-agent"],
     };
     for name in allow {
         if let Some(v) = h.get(*name) {
@@ -487,21 +720,80 @@ fn provider_headers(h: &HeaderMap, p: Protocol, up: &Upstream) -> reqwest::heade
             }
         }
     }
-    // IAM-02: the provider key is injected here and nowhere else.
-    match p {
-        Protocol::Anthropic => {
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(&up.api_key) {
-                out.insert("x-api-key", v);
-            }
-        }
-        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
-            if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", up.api_key))
-            {
-                out.insert(reqwest::header::AUTHORIZATION, v);
-            }
-        }
-    }
+    up.authorize(&mut out);
     out
+}
+
+/// Compressed request bodies cannot be scanned; refusing them is the fail-closed answer.
+fn check_encoding(h: &HeaderMap, p: Protocol) -> Option<Response> {
+    let enc = h.get(header::CONTENT_ENCODING)?.to_str().ok()?.trim();
+    if enc.is_empty() || enc.eq_ignore_ascii_case("identity") {
+        return None;
+    }
+    Some(err_response_for(
+        p,
+        415,
+        "invalid_request_error",
+        "Aegis: сжатые тела запросов не поддерживаются; отключите сжатие запроса в клиенте",
+    ))
+}
+
+/// Which provider answers a `GET` on a shared path.
+fn pick_family(st: &AppState, h: &HeaderMap, path: &str) -> Option<Protocol> {
+    if path.starts_with("/v1beta/") || h.contains_key("x-goog-api-key") {
+        return st.gemini.as_ref().map(|_| Protocol::Gemini);
+    }
+    let anthropic_style = h.contains_key("anthropic-version") || h.contains_key("x-api-key");
+    match (anthropic_style, st.anthropic.is_some(), st.openai.is_some()) {
+        (true, true, _) => Some(Protocol::Anthropic),
+        (_, _, true) => Some(Protocol::OpenAiChat),
+        (_, true, false) => Some(Protocol::Anthropic),
+        _ => st.gemini.as_ref().map(|_| Protocol::Gemini),
+    }
+}
+
+/// Read-only calls (model lists) carry no user data and go through after authentication.
+async fn passthrough_get(st: &AppState, headers: &HeaderMap, path: &str, query: &str) -> Response {
+    let Some(proto) = pick_family(st, headers, path) else {
+        return err_response(404, "not_found_error", "Aegis: провайдер не настроен");
+    };
+    if let Err(why) = st.readiness() {
+        return err_response_for(
+            proto,
+            503,
+            "api_error",
+            &format!("Aegis: {why}; запросы остановлены (fail-closed)"),
+        );
+    }
+    if let Err(r) = authenticate_q(headers, st, query) {
+        return *r;
+    }
+    let Some(up) = upstream_for(st, proto) else {
+        return err_response(404, "not_found_error", "Aegis: провайдер не настроен");
+    };
+    // OpenAI-style providers keep their models below the API prefix (`/api/paas/v4/models`).
+    let upstream_path = match proto {
+        Protocol::OpenAiChat => path.replacen("/v1", &up.api_prefix, 1),
+        _ => path.to_string(),
+    };
+    match st
+        .http
+        .get(up.url(&upstream_path, &forward_query(query)))
+        .headers(provider_headers(headers, proto, up))
+        .send()
+        .await
+    {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let bytes = r.bytes().await.unwrap_or_default();
+            Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(bytes))
+                .unwrap_or_default()
+        }
+        Err(_) => err_response(502, "api_error", "Aegis: провайдер недоступен"),
+    }
 }
 
 async fn proxy(
@@ -510,10 +802,14 @@ async fn proxy(
     method: Method,
     headers: HeaderMap,
     body: Bytes,
+    gem: Option<GemTarget>,
 ) -> Response {
     let fail = |status, kind, msg: &str| err_response_for(proto, status, kind, msg);
     if method != Method::POST {
         return fail(405, "invalid_request_error", "Aegis: ожидается POST");
+    }
+    if let Some(r) = check_encoding(&headers, proto) {
+        return r;
     }
     if let Err(why) = st.readiness() {
         st.metrics
@@ -525,7 +821,8 @@ async fn proxy(
         );
     }
     let engine = st.engine.load_full();
-    let principal = match authenticate(&headers, &st) {
+    let raw_query = gem.as_ref().map(|g| g.query.as_str()).unwrap_or("");
+    let principal = match authenticate_q(&headers, &st, raw_query) {
         Ok(p) => p,
         Err(r) => {
             return if proto == Protocol::Anthropic {
@@ -564,10 +861,9 @@ async fn proxy(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
-    let info = ReqInfo {
-        principal: principal.id.clone(),
-        client: client_name(&headers),
-        model: parsed
+    let model = match &gem {
+        Some(g) => g.model.clone(),
+        None => parsed
             .as_ref()
             .and_then(|v| v.get("model"))
             .and_then(|m| m.as_str())
@@ -575,14 +871,22 @@ async fn proxy(
             .chars()
             .take(80)
             .collect(),
+    };
+    let info = ReqInfo {
+        principal: principal.id.clone(),
+        client: client_name(&headers),
+        model,
         request_bytes: body.len(),
         route: proto.route(),
     };
-    let streaming = parsed
-        .as_ref()
-        .and_then(|v| v.get("stream"))
-        .and_then(|s| s.as_bool())
-        .unwrap_or(false);
+    let streaming = match &gem {
+        Some(g) => g.kind == GemKind::Stream,
+        None => parsed
+            .as_ref()
+            .and_then(|v| v.get("stream"))
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false),
+    };
     drop(parsed);
 
     let t0 = Instant::now();
@@ -596,6 +900,9 @@ async fn proxy(
         Protocol::Anthropic => transform_request(&engine, &meta, &body),
         Protocol::OpenAiChat => openai_chat::transform_request(&engine, &meta, &body),
         Protocol::OpenAiResponses => openai_responses::transform_request(&engine, &meta, &body),
+        Protocol::OpenAiCompletions => openai_completions::transform_request(&engine, &meta, &body),
+        Protocol::OpenAiEmbeddings => openai_embeddings::transform_request(&engine, &meta, &body),
+        Protocol::Gemini => gemini::transform_request(&engine, &meta, &body),
     };
     let (new_body, ctx) = match transformed {
         Ok(x) => x,
@@ -606,10 +913,10 @@ async fn proxy(
                 &info,
                 "rejected",
             );
-            let b = if proto == Protocol::Anthropic {
-                rej.body()
-            } else {
-                rej.body_openai()
+            let b = match proto {
+                Protocol::Anthropic => rej.body(),
+                Protocol::Gemini => rej.body_gemini(),
+                _ => rej.body_openai(),
             };
             return with_aegis_headers(
                 Response::builder()
@@ -625,7 +932,16 @@ async fn proxy(
     let summary = ctx.stats.summary();
     tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
 
-    let url = format!("{}{}", up_cfg.base_url.trim_end_matches('/'), proto.path());
+    let url = match &gem {
+        Some(g) => up_cfg.url(&g.path, &forward_query(&g.query)),
+        None => up_cfg.url(
+            &match proto {
+                Protocol::Anthropic => proto.endpoint().to_string(),
+                _ => format!("{}{}", up_cfg.api_prefix, proto.endpoint()),
+            },
+            "",
+        ),
+    };
     let up = st
         .http
         .post(url)
@@ -657,11 +973,17 @@ async fn proxy(
         tokio::spawn(async move {
             let mut t = match proto {
                 Protocol::Anthropic => AnyStream::A(Box::new(StreamTransformer::new(&engine, ctx))),
-                Protocol::OpenAiChat => {
+                Protocol::OpenAiChat | Protocol::OpenAiEmbeddings => {
                     AnyStream::C(Box::new(ChatStreamTransformer::new(&engine, ctx)))
                 }
                 Protocol::OpenAiResponses => {
                     AnyStream::R(Box::new(ResponsesStreamTransformer::new(&engine, ctx)))
+                }
+                Protocol::OpenAiCompletions => {
+                    AnyStream::P(Box::new(CompletionsStreamTransformer::new(&engine, ctx)))
+                }
+                Protocol::Gemini => {
+                    AnyStream::G(Box::new(GeminiStreamTransformer::new(&engine, ctx)))
                 }
             };
             let mut s = up.bytes_stream();
@@ -706,6 +1028,15 @@ async fn proxy(
             Protocol::OpenAiResponses => {
                 openai_responses::transform_response(&engine, &mut ctx, &bytes)
             }
+            Protocol::OpenAiCompletions => {
+                openai_completions::transform_response(&engine, &mut ctx, &bytes)
+            }
+            // Vectors carry no text to restore.
+            Protocol::OpenAiEmbeddings => bytes.to_vec(),
+            Protocol::Gemini if gem.as_ref().is_some_and(|g| g.kind == GemKind::Other) => {
+                bytes.to_vec()
+            }
+            Protocol::Gemini => gemini::transform_response(&engine, &mut ctx, &bytes),
         }
     } else {
         bytes.to_vec()
@@ -738,6 +1069,9 @@ async fn count_tokens(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Some(r) = check_encoding(&headers, Protocol::Anthropic) {
+        return r;
+    }
     if let Err(why) = st.readiness() {
         return err_response(
             503,
@@ -749,6 +1083,9 @@ async fn count_tokens(
     let principal = match authenticate(&headers, &st) {
         Ok(p) => p,
         Err(r) => return *r,
+    };
+    let Some(up) = st.anthropic.as_ref() else {
+        return err_response(404, "not_found_error", "Aegis: провайдер не настроен");
     };
     let rid = st.request_id();
     let meta = ReqMeta {
@@ -769,14 +1106,10 @@ async fn count_tokens(
                 .unwrap_or_default()
         }
     };
-    let url = format!(
-        "{}/v1/messages/count_tokens",
-        st.upstream.base_url.trim_end_matches('/')
-    );
     match st
         .http
-        .post(url)
-        .headers(upstream_headers(&headers, &st))
+        .post(up.url("/v1/messages/count_tokens", ""))
+        .headers(provider_headers(&headers, Protocol::Anthropic, up))
         .body(new_body)
         .send()
         .await
@@ -793,31 +1126,6 @@ async fn count_tokens(
                 &rid,
                 &ctx.stats.summary(),
             )
-        }
-        Err(_) => err_response(502, "api_error", "Aegis: провайдер недоступен"),
-    }
-}
-
-async fn models(State(st): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if let Err(r) = authenticate(&headers, &st) {
-        return *r;
-    }
-    let url = format!("{}/v1/models", st.upstream.base_url.trim_end_matches('/'));
-    match st
-        .http
-        .get(url)
-        .headers(upstream_headers(&headers, &st))
-        .send()
-        .await
-    {
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let bytes = r.bytes().await.unwrap_or_default();
-            Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(bytes))
-                .unwrap_or_default()
         }
         Err(_) => err_response(502, "api_error", "Aegis: провайдер недоступен"),
     }

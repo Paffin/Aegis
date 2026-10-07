@@ -88,16 +88,16 @@ async fn spawn_gateway(upstream: String) -> String {
     );
     let mut st = AppState::new(
         engine,
-        Upstream {
-            base_url: upstream.clone(),
-            api_key: "sk-ant-PROVIDER-SECRET-0123456789".into(),
-        },
+        Some(Upstream::anthropic(
+            upstream.clone(),
+            "sk-ant-PROVIDER-SECRET-0123456789",
+        )),
         vk,
     );
-    st.openai = Some(Upstream {
-        base_url: upstream.clone(),
-        api_key: "sk-openai-PROVIDER-SECRET-9876543210".into(),
-    });
+    st.openai = Some(Upstream::openai(
+        upstream.clone(),
+        "sk-openai-PROVIDER-SECRET-9876543210",
+    ));
     let st = Arc::new(st);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();

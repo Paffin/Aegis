@@ -267,10 +267,10 @@ mod tests {
         );
         let mut st = AppState::new(
             e,
-            crate::server::Upstream {
-                base_url: "http://127.0.0.1:1".into(),
-                api_key: "k".into(),
-            },
+            Some(crate::server::Upstream::anthropic(
+                "http://127.0.0.1:1",
+                "k",
+            )),
             HashMap::new(),
         );
         st.bundle_required = true;

@@ -4,7 +4,7 @@
 //! the config file. The signed bundle format (CFG-01) replaces this file later.
 
 use crate::engine::Engine;
-use crate::server::{AppState, Principal, Upstream};
+use crate::server::{AppState, Auth, Principal, Upstream};
 use aegis_core::crypto::TenantKeys;
 use aegis_core::detect::{DetectConfig, Dictionary};
 use aegis_core::types::EntityType;
@@ -17,10 +17,27 @@ pub struct ServerConfig {
     pub listen: String,
     #[serde(default = "d_admin")]
     pub admin_listen: String,
-    pub upstream_base_url: String,
-    /// OpenAI-compatible provider; the key comes from `AEGIS_OPENAI_KEY`.
+    /// Anthropic Messages provider (also DeepSeek, Kimi, GLM, MiniMax, Qwen through their
+    /// Anthropic-compatible endpoints). Key: `AEGIS_ANTHROPIC_KEY`.
+    #[serde(default, alias = "upstream_base_url")]
+    pub anthropic_base_url: Option<String>,
+    /// `x-api-key` (default) or `bearer`.
+    #[serde(default)]
+    pub anthropic_auth: Option<String>,
+    /// OpenAI-compatible provider: OpenAI, Azure OpenAI (`/openai`), DeepSeek, Qwen
+    /// (`/compatible-mode`), Kimi, GLM, vLLM, Ollama. Key: `AEGIS_OPENAI_KEY`.
     #[serde(default)]
     pub openai_base_url: Option<String>,
+    /// Path below the base URL before `/chat/completions`: `/v1` (default), `/v4` for Zhipu
+    /// (`https://open.bigmodel.cn/api/paas`), `/api/v3` for Volcengine, empty for DeepSeek.
+    #[serde(default)]
+    pub openai_api_prefix: Option<String>,
+    /// `bearer` (default), `api-key` (Azure) or `none` (local models).
+    #[serde(default)]
+    pub openai_auth: Option<String>,
+    /// Google Gemini API. Key: `AEGIS_GEMINI_KEY`.
+    #[serde(default)]
+    pub gemini_base_url: Option<String>,
     #[serde(default = "d_tenant")]
     pub tenant: String,
     #[serde(default)]
@@ -104,6 +121,39 @@ fn d_tenant() -> String {
     "default".into()
 }
 
+/// Provider credentials; they stay inside the gateway (IAM-02).
+#[derive(Default)]
+pub struct ProviderKeys {
+    pub anthropic: Option<String>,
+    pub openai: Option<String>,
+    pub gemini: Option<String>,
+}
+
+impl ProviderKeys {
+    pub fn anthropic(key: &str) -> Self {
+        Self {
+            anthropic: Some(key.into()),
+            ..Default::default()
+        }
+    }
+
+    /// From `AEGIS_ANTHROPIC_KEY` (or the older `AEGIS_PROVIDER_KEY`), `AEGIS_OPENAI_KEY`,
+    /// `AEGIS_GEMINI_KEY`; every one is optional here and required by its provider section.
+    pub fn from_env() -> Self {
+        let get = |n: &'static str| {
+            secret(n)
+                .ok()
+                .and_then(|k| String::from_utf8(k).ok())
+                .filter(|k| !k.is_empty())
+        };
+        Self {
+            anthropic: get("AEGIS_ANTHROPIC_KEY").or_else(|| get("AEGIS_PROVIDER_KEY")),
+            openai: get("AEGIS_OPENAI_KEY"),
+            gemini: get("AEGIS_GEMINI_KEY"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     Missing(&'static str),
@@ -166,8 +216,7 @@ impl ServerConfig {
         &self,
         k_t: &[u8],
         k_audit: &[u8],
-        provider_key: String,
-        openai_key: Option<String>,
+        provider_keys: ProviderKeys,
     ) -> Result<AppState, ConfigError> {
         // Short keys make pseudonyms guessable; refuse them (SEC-03).
         if k_t.len() < 16 || k_audit.len() < 16 {
@@ -232,23 +281,66 @@ impl ServerConfig {
                 )
             })
             .collect();
-        let openai = match (&self.openai_base_url, openai_key) {
-            (Some(url), Some(k)) => Some(Upstream {
+        let provider = |base: &Option<String>,
+                        auth: &Option<String>,
+                        default: Auth,
+                        key: Option<String>,
+                        key_name: &'static str|
+         -> Result<Option<Upstream>, ConfigError> {
+            let Some(url) = base else { return Ok(None) };
+            let auth = match auth {
+                None => default,
+                Some(a) => Auth::parse(a)
+                    .ok_or_else(|| ConfigError::Invalid(format!("unknown auth mode {a}")))?,
+            };
+            let key = match (auth, key) {
+                (Auth::Nothing, k) => k.unwrap_or_default(),
+                (_, Some(k)) => k,
+                (_, None) => return Err(ConfigError::Missing(key_name)),
+            };
+            Ok(Some(Upstream {
                 base_url: url.clone(),
-                api_key: k,
-            }),
-            (Some(_), None) => return Err(ConfigError::Missing("AEGIS_OPENAI_KEY")),
-            (None, _) => None,
+                api_key: key,
+                auth,
+                api_prefix: "/v1".into(),
+            }))
         };
-        let mut st = AppState::new(
-            engine,
-            Upstream {
-                base_url: self.upstream_base_url.clone(),
-                api_key: provider_key,
-            },
-            vk,
-        );
+        let anthropic = provider(
+            &self.anthropic_base_url,
+            &self.anthropic_auth,
+            Auth::XApiKey,
+            provider_keys.anthropic,
+            "AEGIS_ANTHROPIC_KEY",
+        )?;
+        let mut openai = provider(
+            &self.openai_base_url,
+            &self.openai_auth,
+            Auth::Bearer,
+            provider_keys.openai,
+            "AEGIS_OPENAI_KEY",
+        )?;
+        if let (Some(o), Some(p)) = (openai.take(), &self.openai_api_prefix) {
+            openai = Some(o.with_prefix(p));
+        }
+        let gemini = provider(
+            &self.gemini_base_url,
+            &None,
+            Auth::GoogApiKey,
+            provider_keys.gemini,
+            "AEGIS_GEMINI_KEY",
+        )?
+        .map(|mut u| {
+            u.api_prefix.clear();
+            u
+        });
+        if anthropic.is_none() && openai.is_none() && gemini.is_none() {
+            return Err(ConfigError::Invalid(
+                "no provider: set anthropic_base_url, openai_base_url or gemini_base_url".into(),
+            ));
+        }
+        let mut st = AppState::new(engine, anthropic, vk);
         st.openai = openai;
+        st.gemini = gemini;
         st.bundle_required = self.bundle.is_some();
         Ok(st)
     }
@@ -271,7 +363,9 @@ mod tests {
     fn parses_and_builds() {
         let c: ServerConfig = serde_json::from_str(CFG).unwrap();
         assert_eq!(c.listen, "127.0.0.1:8080");
-        let st = c.build(&[1; 32], &[2; 32], "pk".into(), None).unwrap();
+        let st = c
+            .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
+            .unwrap();
         assert!(
             st.keys.load().contains_key("ab12"),
             "hashes are matched case-insensitively"
@@ -282,12 +376,18 @@ mod tests {
     #[test]
     fn rejects_short_keys_and_bad_values() {
         let c: ServerConfig = serde_json::from_str(CFG).unwrap();
-        assert!(c.build(b"short", &[2; 32], "pk".into(), None).is_err());
+        assert!(c
+            .build(b"short", &[2; 32], ProviderKeys::anthropic("pk"))
+            .is_err());
         let bad: ServerConfig =
             serde_json::from_str(&CFG.replace("10.50.0.0/16", "10.50.0.0/99")).unwrap();
-        assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
+        assert!(bad
+            .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
+            .is_err());
         let bad: ServerConfig = serde_json::from_str(&CFG.replace("SYSTEM", "NOPE")).unwrap();
-        assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
+        assert!(bad
+            .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
+            .is_err());
     }
 
     // REQ: CFG-02 — a bundle configuration is validated before start.
@@ -305,20 +405,22 @@ mod tests {
             ValidKey::hex()
         ));
         let _ = &hex;
-        let st = ok.build(&[1; 32], &[2; 32], "pk".into(), None).unwrap();
+        let st = ok
+            .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
+            .unwrap();
         assert!(
             st.bundle_required,
             "a configured bundle makes its absence fail-closed"
         );
         assert!(
             with("\"bundle\": {\"source\": \"x\", \"trusted_keys\": []},")
-                .build(&[1; 32], &[2; 32], "pk".into(), None)
+                .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
                 .is_err()
         );
-        assert!(with(&format!("\"bundle\": {{\"source\": \"x\", \"trusted_keys\": [\"{}\"], \"reload_seconds\": 60}},", ValidKey::hex())).build(&[1; 32], &[2; 32], "pk".into(), None).is_err(), "reload slower than 30 s");
+        assert!(with(&format!("\"bundle\": {{\"source\": \"x\", \"trusted_keys\": [\"{}\"], \"reload_seconds\": 60}},", ValidKey::hex())).build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk")).is_err(), "reload slower than 30 s");
         assert!(
             with("\"bundle\": {\"source\": \"x\", \"trusted_keys\": [\"nothex\"]},")
-                .build(&[1; 32], &[2; 32], "pk".into(), None)
+                .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
                 .is_err()
         );
     }

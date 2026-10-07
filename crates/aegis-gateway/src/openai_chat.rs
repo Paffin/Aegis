@@ -21,7 +21,42 @@ const SERVER_TOOLS: &[&str] = &[
     "computer_use_preview",
     "mcp",
     "image_generation",
+    // OpenAI-compatible providers of other vendors: GLM (`web_search`, `retrieval`), Kimi
+    // (`builtin_function`), Qwen and others (`web_fetch`).
+    "retrieval",
+    "knowledge_retrieval",
+    "builtin_function",
+    "web_fetch",
 ];
+
+/// Request switches that turn on a search or retrieval the provider runs by itself.
+const SERVER_SWITCHES: &[&str] = &[
+    "web_search_options",
+    "enable_search",
+    "search_options",
+    "enable_web_search",
+    "web_search",
+];
+
+/// Index under which a streamed tool-call fragment is accumulated. Some providers (older Qwen
+/// and GLM endpoints, several vLLM parsers) omit `index` or reuse 0 for every call, so a new
+/// `id` starts a new call.
+fn tool_slot(tools: &BTreeMap<u64, ToolAcc>, index: Option<u64>, id: Option<&str>) -> u64 {
+    let next = tools.keys().next_back().map_or(0, |k| k + 1);
+    let id = id.filter(|i| !i.is_empty());
+    match (index, id) {
+        (Some(i), Some(id)) => match tools.get(&i) {
+            Some(a) if !a.id.is_empty() && a.id != id => next,
+            _ => i,
+        },
+        (Some(i), None) => i,
+        (None, Some(id)) => tools
+            .iter()
+            .find(|(_, a)| a.id == id)
+            .map_or(next, |(k, _)| *k),
+        (None, None) => tools.keys().next_back().copied().unwrap_or(0),
+    }
+}
 
 struct Collect<'n> {
     blocks: Vec<Blk<'n>>,
@@ -97,8 +132,15 @@ pub fn transform_request(
     let t_start = std::time::Instant::now();
 
     // PRO-09: provider-side tools run outside Aegis.
-    if root.get("web_search_options").is_some() {
-        return Err(bad("web_search_options отключён политикой (серверные инструменты провайдера обходят gateway)"));
+    for key in SERVER_SWITCHES {
+        if root
+            .get(key)
+            .is_some_and(|n| !matches!(n.raw(body), b"false" | b"null"))
+        {
+            return Err(bad(&format!(
+                "{key} отключён политикой (серверные инструменты провайдера обходят gateway)"
+            )));
+        }
     }
     if let Some(tools) = root.get("tools") {
         for t in tools.items() {
@@ -108,6 +150,15 @@ pub fn transform_request(
                         "серверный инструмент {ty} отключён политикой"
                     )));
                 }
+            }
+            // Kimi's built-in `$web_search` is named, not typed.
+            if t.get("function")
+                .and_then(|f| f.str_at("name", body))
+                .is_some_and(|n| n.starts_with('$'))
+            {
+                return Err(bad(
+                    "встроенные функции провайдера ($web_search и подобные) отключены политикой",
+                ));
             }
         }
     }
@@ -526,7 +577,11 @@ impl<'e> ChatStreamTransformer<'e> {
             // tool calls are buffered completely
             if let Some(calls) = keep_delta.remove("tool_calls") {
                 for c in calls.as_array().cloned().unwrap_or_default() {
-                    let ti = c.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                    let ti = tool_slot(
+                        &st.tools,
+                        c.get("index").and_then(|i| i.as_u64()),
+                        c.get("id").and_then(|i| i.as_str()),
+                    );
                     let acc = st.tools.entry(ti).or_default();
                     if let Some(id) = c.get("id").and_then(|x| x.as_str()) {
                         acc.id = id.to_string();
@@ -717,6 +772,12 @@ mod tests {
             r#"{"model":"m","tools":[{"type":"web_search_preview"}],"messages":[]}"#,
             r#"{"model":"m","web_search_options":{},"messages":[]}"#,
             r#"{"model":"m","tools":[{"type":"mcp","server_url":"x"}],"messages":[]}"#,
+            // Chinese providers' built-in search
+            r#"{"model":"qwen","enable_search":true,"messages":[]}"#,
+            r#"{"model":"glm","tools":[{"type":"web_search","web_search":{"enable":true}}],"messages":[]}"#,
+            r#"{"model":"glm","tools":[{"type":"retrieval","retrieval":{"knowledge_id":"k"}}],"messages":[]}"#,
+            r#"{"model":"kimi","tools":[{"type":"builtin_function","function":{"name":"$web_search"}}],"messages":[]}"#,
+            r#"{"model":"kimi","tools":[{"type":"function","function":{"name":"$web_search"}}],"messages":[]}"#,
         ] {
             assert_eq!(
                 transform_request(&e, &meta(), bad.as_bytes())
@@ -727,6 +788,8 @@ mod tests {
         }
         let ok = r#"{"model":"m","tools":[{"type":"function","function":{"name":"f","parameters":{}}}],"messages":[]}"#;
         assert!(transform_request(&e, &meta(), ok.as_bytes()).is_ok());
+        let off = r#"{"model":"qwen","enable_search":false,"messages":[]}"#;
+        assert!(transform_request(&e, &meta(), off.as_bytes()).is_ok());
     }
 
     #[test]
@@ -919,6 +982,76 @@ mod tests {
         stream += &chunk(json!({}), json!("tool_calls"));
         let (out, _) = run(&e, ctx3, &stream, 64);
         assert!(out.contains("\"finish_reason\":\"stop\""));
+    }
+
+    // Providers of other vendors (GLM, older Qwen/vLLM parsers) send parallel calls without
+    // `index`, or with index 0 for every call: each new `id` is its own call.
+    #[test]
+    fn stream_tool_calls_without_a_usable_index_stay_separate() {
+        let e = engine();
+        let (_, ctx) = transform_request(&e, &meta(), &session()).unwrap();
+        let h = pseudonym(&ctx, aegis_core::EntityType::Host);
+        let s = pseudonym(&ctx, aegis_core::EntityType::Secret);
+        let good = serde_json::to_string(&json!({"path": "a.yaml", "content": format!("H: {h}")}))
+            .unwrap();
+        let bad = serde_json::to_string(&json!({"command": format!("echo {s}")})).unwrap();
+        for with_index in [false, true] {
+            let call = |id: &str, name: &str, args: &str| {
+                let mut c = json!({"id": id, "type": "function", "function": {"name": name, "arguments": args}});
+                if with_index {
+                    c["index"] = json!(0);
+                }
+                chunk(json!({"tool_calls": [c]}), Value::Null)
+            };
+            let mut stream = call("a", "write_to_file", &good);
+            stream += &call("b", "execute_command", &bad);
+            stream += &chunk(json!({}), json!("tool_calls"));
+            let (_, ctx) = transform_request(&e, &meta(), &session()).unwrap();
+            let (out, ctx2) = run(&e, ctx, &stream, 17);
+            assert!(out.contains("H: prod-db01.pay.corp.local"), "{out}");
+            assert!(out.contains("[Aegis]") && !out.contains("Jd8"), "{out}");
+            assert_eq!(ctx2.stats.denied, 1, "with_index={with_index}");
+        }
+    }
+
+    // DeepSeek, Qwen and Kimi send the model's reasoning as `reasoning_content`; it is the
+    // model's own output and passes through untouched, in both modes.
+    #[test]
+    fn reasoning_content_passes_untouched() {
+        let e = engine();
+        let (_, mut ctx) = transform_request(&e, &meta(), &session()).unwrap();
+        let h = pseudonym(&ctx, aegis_core::EntityType::Host);
+        let msg = json!({"role": "assistant", "reasoning_content": format!("think about {h}"), "content": "ok"});
+        let v: Value =
+            serde_json::from_slice(&transform_response(&e, &mut ctx, &response(msg, "stop")))
+                .unwrap();
+        assert_eq!(
+            v["choices"][0]["message"]["reasoning_content"],
+            format!("think about {h}")
+        );
+        let (_, ctx) = transform_request(&e, &meta(), &session()).unwrap();
+        let stream = chunk(
+            json!({"reasoning_content": format!("think about {h}")}),
+            Value::Null,
+        ) + &chunk(json!({"content": "ok"}), json!("stop"));
+        let (out, _) = run(&e, ctx, &stream, 11);
+        assert!(out.contains(&format!("think about {h}")), "{out}");
+        assert_eq!(content_of(&out), "ok");
+    }
+
+    // The reasoning of the previous turn comes back in the next request (DeepSeek requires
+    // it for tool calls): it is scanned like any other text and keeps its structure.
+    #[test]
+    fn reasoning_content_in_history_is_scanned() {
+        let e = engine();
+        let src = serde_json::to_vec(&json!({"model": "deepseek-chat", "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning_content": "the password=\"Jd8@2jd82k\" is in the file", "content": "ok"}]}))
+        .unwrap();
+        let (out, _) = transform_request(&e, &meta(), &src).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(!s.contains("Jd8@2jd82k"), "{s}");
+        assert!(s.contains("reasoning_content"));
     }
 
     #[test]

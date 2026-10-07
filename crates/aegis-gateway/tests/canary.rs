@@ -99,10 +99,10 @@ async fn masked_values_appear_nowhere_but_the_clients_own_response() {
     );
     let mut state = AppState::new(
         Engine::new(keys, det, dict),
-        Upstream {
-            base_url: format!("http://{up_addr}"),
-            api_key: "provider-key".into(),
-        },
+        Some(Upstream::anthropic(
+            format!("http://{up_addr}"),
+            "provider-key",
+        )),
         vk,
     );
     let audit_buf = Buf::default();

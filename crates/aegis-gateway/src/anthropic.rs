@@ -37,6 +37,24 @@ impl Reject {
     }
 }
 
+impl Reject {
+    /// API-03 in Google format.
+    pub fn body_gemini(&self) -> Vec<u8> {
+        let status = match self.status {
+            400 | 415 => "INVALID_ARGUMENT",
+            401 => "UNAUTHENTICATED",
+            403 => "PERMISSION_DENIED",
+            404 => "NOT_FOUND",
+            405 => "INVALID_ARGUMENT",
+            _ => "UNAVAILABLE",
+        };
+        serde_json::to_vec(
+            &json!({"error": {"code": self.status, "message": self.message, "status": status}}),
+        )
+        .unwrap_or_default()
+    }
+}
+
 pub struct ReqMeta<'a> {
     pub principal: &'a str,
     pub conversation: Option<&'a str>,

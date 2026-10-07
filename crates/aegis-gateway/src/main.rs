@@ -1,7 +1,7 @@
 //! `aegis-gateway` binary. REQ: NFR-06, NFR-09, SEC-06, CFG-05, SEC-02.
 
 use aegis_gateway::bundle_loader::{parse_trusted, Loader, Secrets, Source};
-use aegis_gateway::config::{secret, ServerConfig};
+use aegis_gateway::config::{secret, ProviderKeys, ServerConfig};
 use aegis_gateway::server::{admin_app, app};
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,13 +41,8 @@ async fn main() {
     // NFR-09: without keys the gateway does not start (fail-closed).
     let k_t = secret("AEGIS_K_TENANT").unwrap_or_else(|e| fail(e));
     let k_audit = secret("AEGIS_K_AUDIT").unwrap_or_else(|e| fail(e));
-    let provider_key = String::from_utf8(secret("AEGIS_PROVIDER_KEY").unwrap_or_else(|e| fail(e)))
-        .unwrap_or_else(|_| fail("AEGIS_PROVIDER_KEY is not UTF-8"));
-    let openai_key = secret("AEGIS_OPENAI_KEY")
-        .ok()
-        .and_then(|k| String::from_utf8(k).ok());
     let mut state = cfg
-        .build(&k_t, &k_audit, provider_key, openai_key)
+        .build(&k_t, &k_audit, ProviderKeys::from_env())
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
     let state = Arc::new(state);

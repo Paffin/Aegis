@@ -571,3 +571,94 @@ pub fn blocked(e: crate::engine::IngressError, request_id: &str) -> crate::anthr
         message: format!("Aegis: запрос отклонён политикой. Причина: {} в запросе (правило {rule}). Удалите значение из контекста и повторите. Request ID: {request_id}", ty.marker()),
     }
 }
+
+/// What an adapter found in a request, before the shared steps run.
+#[derive(Default)]
+pub struct Draft<'n> {
+    pub blocks: Vec<crate::engine::Blk<'n>>,
+    pub edits: crate::json::Edits,
+    /// Text of the first user message, for the conversation salt (PSE-03).
+    pub first_user: Vec<String>,
+    /// A tool result came from an untrusted source (three-condition rule).
+    pub untrusted: bool,
+    /// Start offsets of nodes that must pass untouched (signed or encrypted content).
+    pub opaque: HashSet<usize>,
+}
+
+/// The steps every adapter ends with: default-deny sweep (PRO-10), salt, detection and
+/// replacement, byte-exact splicing of the edits into the original body.
+pub fn finish_request<'n>(
+    engine: &Engine,
+    meta: &crate::anthropic::ReqMeta<'_>,
+    body: &[u8],
+    root: &'n crate::json::Node,
+    mut d: Draft<'n>,
+    parse_ms: f64,
+) -> Result<(Vec<u8>, RequestCtx), crate::anthropic::Reject> {
+    use crate::engine::{process_blocks, Blk};
+    use aegis_core::crypto::{derive_salt, SaltInput};
+    use aegis_core::pseudo::{Mapping, Source};
+    let t_start = std::time::Instant::now();
+
+    let mut skip: HashSet<usize> = d.edits.starts().collect();
+    skip.extend(&d.opaque);
+    skip.extend(d.blocks.iter().map(|b| b.node.span().start));
+    let mut sw = Sweep::default();
+    sweep(root, body, &skip, &mut sw);
+    for l in sw.leaves {
+        d.blocks.push(Blk {
+            node: l,
+            text: l.string(body).unwrap_or_default(),
+            source: Source::User,
+            is_system: false,
+        });
+    }
+    guard(engine, meta.route, &sw.guarded).map_err(|e| blocked(e, meta.request_id))?;
+
+    let fu: Vec<&str> = d.first_user.iter().map(|s| s.as_str()).collect();
+    let (salt, _) = derive_salt(
+        &engine.keys,
+        &SaltInput {
+            principal: meta.principal,
+            header: meta.conversation,
+            session_field: None,
+            first_user_message: &fu,
+        },
+    );
+    let salt_bytes = salt.0;
+    let mut ctx = RequestCtx {
+        salt,
+        mapping: Mapping::default(),
+        trifecta: Default::default(),
+        classes: HashSet::new(),
+        stats: Default::default(),
+        request_id: meta.request_id.to_string(),
+        route: meta.route.to_string(),
+        conversation_hash: engine.keys.k_audit.mac(&[b"conv", &salt_bytes])[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    };
+    let rendered =
+        process_blocks(engine, &mut ctx, &d.blocks).map_err(|e| blocked(e, meta.request_id))?;
+    for (b, t) in d.blocks.iter().zip(&rendered.texts) {
+        if let Some(t) = t {
+            d.edits.replace_string(b.node, t);
+        }
+    }
+    ctx.trifecta = engine.trifecta.state(&ctx.classes, d.untrusted);
+    ctx.stats.timings_ms.insert("parse", parse_ms);
+    ctx.stats
+        .timings_ms
+        .insert("transform", t_start.elapsed().as_secs_f64() * 1000.0);
+    Ok((d.edits.apply(body), ctx))
+}
+
+/// A 400 in the shape every adapter uses.
+pub fn bad_request(m: &str) -> crate::anthropic::Reject {
+    crate::anthropic::Reject {
+        status: 400,
+        kind: "invalid_request_error",
+        message: format!("Aegis: {m}"),
+    }
+}

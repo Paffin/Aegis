@@ -57,4 +57,5 @@ jobs:
       - name: Real clients against Aegis and a mock provider
         run: |
           npm install -g @anthropic-ai/claude-code
+          pip install uv
           scripts/clients.sh

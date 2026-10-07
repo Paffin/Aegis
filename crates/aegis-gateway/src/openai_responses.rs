@@ -127,7 +127,7 @@ pub fn transform_request(
             if let Some(ty) = t.str_at("type", body) {
                 if SERVER_TOOLS.iter().any(|s| ty.starts_with(s)) {
                     return Err(bad(&format!(
-                        "серверный инструмент {ty} отключён политикой"
+                        "серверный инструмент {ty} отключён политикой: он выполняется у провайдера в обход gateway. Отключите его в настройках клиента"
                     )));
                 }
             }

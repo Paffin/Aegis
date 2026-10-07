@@ -64,11 +64,13 @@ impl Sink {
             | "patch" => Sink::FileWrite,
             "Read" | "Glob" | "Grep" | "NotebookRead" | "LS" | "read_file" | "list_files"
             | "search_files" | "list_dir" | "grep_search" | "read" | "glob" | "grep" | "list"
-            | "read_many_files" | "list_directory" | "search_file_content" | "view_image" => {
-                Sink::FileRead
-            }
+            | "read_many_files" | "list_directory" | "search_file_content" | "view_image"
+            | "List" | "Search" | "read_files" => Sink::FileRead,
+            // the answer to the user, not an action: the same rules as for the text of a reply
+            "submit_and_exit" | "attempt_completion" | "ask_followup_question"
+            | "plan_mode_respond" => Sink::Text,
             "WebFetch" | "WebSearch" | "web_search" | "browser_action" | "web_fetch" | "webfetch"
-            | "google_web_search" => Sink::Network,
+            | "google_web_search" | "Fetch" => Sink::Network,
             "Task" | "task" => Sink::Agent,
             "use_mcp_tool" | "access_mcp_resource" => Sink::Mcp,
             t if t.starts_with("mcp__") || t.starts_with("mcp_") => Sink::Mcp,
@@ -99,6 +101,8 @@ pub fn is_shell_tool(tool: &str) -> bool {
             | "bash"
             | "execute_bash"
             | "run_terminal_command"
+            // Cline (`commands`: a list of commands)
+            | "run_commands"
     )
 }
 
@@ -422,6 +426,8 @@ mod tests {
             ("webfetch", Sink::Network),
             ("google_web_search", Sink::Network),
             ("task", Sink::Agent),
+            ("Fetch", Sink::Network), // Continue
+            ("List", Sink::FileRead),
             ("use_mcp_tool", Sink::Mcp),
             ("mcp_github_create_issue", Sink::Mcp),
         ] {

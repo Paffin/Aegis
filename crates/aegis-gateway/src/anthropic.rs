@@ -138,7 +138,7 @@ pub fn transform_request(
                     return Err(Reject {
                         status: 400,
                         kind: "invalid_request_error",
-                        message: format!("Aegis: серверный инструмент {ty} отключён политикой"),
+                        message: format!("Aegis: серверный инструмент {ty} отключён политикой: он выполняется у провайдера в обход gateway. Отключите его в настройках клиента"),
                     });
                 }
             }

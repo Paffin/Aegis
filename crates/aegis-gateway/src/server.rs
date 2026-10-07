@@ -120,6 +120,82 @@ impl Auth {
     }
 }
 
+/// Which family of protocols a route serves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+impl Family {
+    pub fn parse(s: &str) -> Option<Family> {
+        match s {
+            "anthropic" => Some(Family::Anthropic),
+            "openai" => Some(Family::OpenAi),
+            "gemini" => Some(Family::Gemini),
+            _ => None,
+        }
+    }
+}
+
+/// RTE-01: a static route. A request goes to the first route of its protocol family whose model
+/// patterns and groups fit; the route supplies the provider, its credentials, and the name the
+/// policy sees (`route:` of an ingress rule). Without a match the default provider of the family
+/// is used.
+pub struct Route {
+    pub name: String,
+    pub family: Family,
+    /// Patterns with `*` over the model name the client asked for; empty = any model.
+    pub models: Vec<String>,
+    /// The principal needs one of these groups; empty = any principal.
+    pub groups: Vec<String>,
+    pub upstream: Upstream,
+}
+
+/// `*` matches any run of characters (also none); everything else is literal.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || text.len() < first.len() + last.len() || !text.ends_with(last) {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+fn family_of(p: Protocol) -> Family {
+    match p {
+        Protocol::Anthropic => Family::Anthropic,
+        Protocol::Gemini => Family::Gemini,
+        _ => Family::OpenAi,
+    }
+}
+
+/// The route for this request, if one is configured for it.
+pub fn select_route<'a>(
+    routes: &'a [Route],
+    p: Protocol,
+    model: &str,
+    principal: &Principal,
+) -> Option<&'a Route> {
+    let fam = family_of(p);
+    routes.iter().find(|r| {
+        r.family == fam
+            && (r.models.is_empty() || r.models.iter().any(|m| glob_match(m, model)))
+            && (r.groups.is_empty() || r.groups.iter().any(|g| principal.groups.contains(g)))
+    })
+}
+
 pub struct Upstream {
     pub base_url: String,
     /// Provider credentials stay inside Aegis (IAM-02).
@@ -210,6 +286,8 @@ pub struct AppState {
     /// Requests in flight (a request holds its permit until its response body is over): beyond
     /// the limit a request is refused at once instead of piling up bodies in memory.
     pub limiter: Arc<tokio::sync::Semaphore>,
+    /// RTE-01: static routes, tried in order before the default providers.
+    pub routes: Vec<Route>,
     /// RTE-02: client-visible model name → the provider's name.
     pub model_aliases: std::collections::BTreeMap<String, String>,
     pub audit: Audit,
@@ -247,6 +325,7 @@ impl AppState {
             bundle_required: false,
             http: client_with(Duration::from_secs(10), Duration::from_secs(300)),
             limiter: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
+            routes: vec![],
             model_aliases: Default::default(),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
@@ -586,7 +665,7 @@ struct ReqInfo {
     client: String,
     model: String,
     request_bytes: usize,
-    route: &'static str,
+    route: String,
 }
 
 fn client_name(h: &HeaderMap) -> String {
@@ -666,7 +745,7 @@ fn complete(
                 .into_iter()
                 .filter_map(|s| ctx.stats.timings_ms.get(s).map(|ms| (s, *ms)))
                 .collect(),
-            route: info.route,
+            route: info.route.clone(),
             model: info.model.clone(),
             client: info.client.clone(),
             decision,
@@ -682,7 +761,7 @@ fn complete(
         tenant: &engine.keys.tenant,
         principal: &info.principal,
         client: &info.client,
-        route: info.route,
+        route: &info.route,
         model: &info.model,
         request_bytes: info.request_bytes,
         bundle_version: &bundle_version,
@@ -1031,13 +1110,6 @@ async fn proxy(
             }
         }
     };
-    let Some(up_cfg) = upstream_for(&st, proto) else {
-        return fail(
-            404,
-            "not_found_error",
-            "Aegis: провайдер для этого протокола не настроен",
-        );
-    };
     let rid = st.request_id();
     // AUD-04: with `audit.required` traffic stops when the audit queue overflowed (fail-closed).
     if !st.audit.has_room() {
@@ -1067,6 +1139,19 @@ async fn proxy(
             .take(80)
             .collect(),
     };
+    // RTE-01: the route fixes provider, credentials and the name the policy sees.
+    let routed = select_route(&st.routes, proto, &model, &principal);
+    let Some(up_cfg) = routed
+        .map(|r| &r.upstream)
+        .or_else(|| upstream_for(&st, proto))
+    else {
+        return fail(
+            404,
+            "not_found_error",
+            "Aegis: для этой модели и этого протокола нет провайдера",
+        );
+    };
+    let route_name = routed.map_or_else(|| proto.route().to_string(), |r| r.name.clone());
     let info = ReqInfo {
         started_unix_ns: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1082,7 +1167,7 @@ async fn proxy(
         client: client_name(&headers),
         model,
         request_bytes: body.len(),
-        route: proto.route(),
+        route: route_name.clone(),
     };
     let streaming = match &gem {
         Some(g) => g.kind == GemKind::Stream,
@@ -1099,7 +1184,7 @@ async fn proxy(
         principal: &principal.id,
         conversation: conv.as_deref(),
         request_id: &rid,
-        route: proto.route(),
+        route: &route_name,
     };
     let transformed = match proto {
         Protocol::Anthropic => transform_request(&engine, &meta, &body),

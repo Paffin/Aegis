@@ -102,6 +102,28 @@ pub async fn run(path: &str) -> bool {
                     ));
                 }
             }
+            for rt in &st.routes {
+                r.ok(format_args!(
+                    "маршрут {}: {} → {}{}{}",
+                    rt.name,
+                    if rt.models.is_empty() {
+                        "любая модель".to_string()
+                    } else {
+                        rt.models.join(", ")
+                    },
+                    shown(&rt.upstream.base_url),
+                    if rt.groups.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", группы {}", rt.groups.join(", "))
+                    },
+                    if rt.upstream.api_key.is_empty() {
+                        ", без ключа"
+                    } else {
+                        ", ключ задан"
+                    },
+                ));
+            }
             Some(st)
         }
         Err(e) => {

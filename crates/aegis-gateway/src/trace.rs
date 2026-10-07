@@ -45,7 +45,7 @@ pub struct Finished {
     pub upstream_ms: f64,
     /// (stage, milliseconds) of the request side: parse, detect, transform.
     pub stages: Vec<(&'static str, f64)>,
-    pub route: &'static str,
+    pub route: String,
     pub model: String,
     pub client: String,
     pub decision: &'static str,

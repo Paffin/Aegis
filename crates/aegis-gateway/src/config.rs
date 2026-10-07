@@ -67,6 +67,9 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// RTE-01: static routes by model name and group; see [`RouteConfig`].
+    #[serde(default)]
+    pub routes: Vec<RouteConfig>,
     /// SEC-05: serve TLS (1.2+) on `listen`; with `client_ca_file` clients need a certificate (mTLS).
     #[serde(default)]
     pub tls: Option<crate::tls::TlsFiles>,
@@ -155,6 +158,33 @@ pub struct VirtualKey {
     pub groups: Vec<String>,
 }
 
+/// A route (RTE-01): which provider serves which models, for whom, under which name the policy
+/// knows it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RouteConfig {
+    /// The name rules of the policy use in `route:`.
+    pub name: String,
+    /// `anthropic`, `openai` or `gemini`: the protocol family the provider speaks.
+    pub protocol: String,
+    pub base_url: String,
+    #[serde(default)]
+    pub api_prefix: Option<String>,
+    /// `x-api-key`, `bearer`, `api-key`, `x-goog-api-key` or `none`; the family's default if absent.
+    #[serde(default)]
+    pub auth: Option<String>,
+    /// Name of the environment variable that holds the provider key (`NAME_FILE` works too).
+    /// Not needed with `auth: none`.
+    #[serde(default)]
+    pub key_env: Option<String>,
+    /// Model names the client may ask for; `*` is a wildcard. Empty: any model.
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// Groups of virtual keys the route is for. Empty: everyone.
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
 fn d_listen() -> String {
     "127.0.0.1:8080".into()
 }
@@ -217,13 +247,16 @@ impl std::error::Error for ConfigError {}
 
 /// Read a secret from `NAME` or from the file named by `NAME_FILE`.
 pub fn secret(name: &'static str) -> Result<Vec<u8>, ConfigError> {
+    secret_named(name).map_err(|_| ConfigError::Missing(name))
+}
+
+/// [`secret`] for a name that comes from the configuration.
+fn secret_named(name: &str) -> Result<Vec<u8>, ()> {
     if let Ok(path) = std::env::var(format!("{name}_FILE")) {
-        let s = std::fs::read(&path).map_err(|_| ConfigError::Missing(name))?;
+        let s = std::fs::read(&path).map_err(|_| ())?;
         return Ok(trim(s));
     }
-    std::env::var(name)
-        .map(|v| v.into_bytes())
-        .map_err(|_| ConfigError::Missing(name))
+    std::env::var(name).map(|v| v.into_bytes()).map_err(|_| ())
 }
 
 fn trim(mut v: Vec<u8>) -> Vec<u8> {
@@ -254,6 +287,75 @@ impl ServerConfig {
             }
             None => Audit::to_writer(std::io::stdout(), self.audit_queue, self.audit_required),
         })
+    }
+
+    fn build_routes(&self) -> Result<Vec<crate::server::Route>, ConfigError> {
+        use crate::server::{Family, Route};
+        let bad = |name: &str, why: &str| ConfigError::Invalid(format!("route {name}: {why}"));
+        let mut names = std::collections::HashSet::new();
+        let mut out = vec![];
+        for r in &self.routes {
+            if r.name.is_empty()
+                || !r
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                return Err(bad(&r.name, "name: letters, digits, - _ . only"));
+            }
+            if !names.insert(r.name.clone()) {
+                return Err(bad(&r.name, "the name is used twice"));
+            }
+            let family = Family::parse(&r.protocol)
+                .ok_or_else(|| bad(&r.name, "protocol must be anthropic, openai or gemini"))?;
+            let default_auth = match family {
+                Family::Anthropic => Auth::XApiKey,
+                Family::OpenAi => Auth::Bearer,
+                Family::Gemini => Auth::GoogApiKey,
+            };
+            let auth = match &r.auth {
+                None => default_auth,
+                Some(a) => Auth::parse(a).ok_or_else(|| bad(&r.name, "unknown auth mode"))?,
+            };
+            let key = match (&r.key_env, auth) {
+                (_, Auth::Nothing) => String::new(),
+                (None, _) => {
+                    return Err(bad(
+                        &r.name,
+                        "key_env: name the variable with the provider key",
+                    ))
+                }
+                (Some(n), _) => secret_named(n)
+                    .ok()
+                    .and_then(|k| String::from_utf8(k).ok())
+                    .filter(|k| !k.is_empty())
+                    .ok_or_else(|| bad(&r.name, &format!("the secret {n} is not set")))?,
+            };
+            if r.base_url.is_empty() {
+                return Err(bad(&r.name, "base_url"));
+            }
+            let mut up = Upstream {
+                base_url: r.base_url.clone(),
+                api_key: key,
+                auth,
+                api_prefix: if family == Family::Gemini {
+                    String::new()
+                } else {
+                    "/v1".into()
+                },
+            };
+            if let Some(p) = &r.api_prefix {
+                up = up.with_prefix(p);
+            }
+            out.push(Route {
+                name: r.name.clone(),
+                family,
+                models: r.models.clone(),
+                groups: r.groups.clone(),
+                upstream: up,
+            });
+        }
+        Ok(out)
     }
 
     pub fn build(
@@ -385,14 +487,17 @@ impl ServerConfig {
             u.api_prefix.clear();
             u
         });
-        if anthropic.is_none() && openai.is_none() && gemini.is_none() {
+        let routes = self.build_routes()?;
+        if anthropic.is_none() && openai.is_none() && gemini.is_none() && routes.is_empty() {
             return Err(ConfigError::Invalid(
-                "no provider: set anthropic_base_url, openai_base_url or gemini_base_url".into(),
+                "no provider: set anthropic_base_url, openai_base_url, gemini_base_url or routes"
+                    .into(),
             ));
         }
         let mut st = AppState::new(engine, anthropic, vk);
         st.openai = openai;
         st.gemini = gemini;
+        st.routes = routes;
         st.bundle_required = self.bundle.is_some();
         if self
             .model_aliases
@@ -476,6 +581,61 @@ mod tests {
         assert!(bad
             .build(&[1; 32], &[2; 32], ProviderKeys::anthropic("pk"))
             .is_err());
+    }
+
+    // REQ: RTE-01 — routes are read, checked and given their own credentials.
+    #[test]
+    fn routes_are_validated() {
+        std::env::set_var("AEGIS_TEST_ROUTE_KEY", "route-key");
+        let build = |json: &str| {
+            serde_json::from_str::<ServerConfig>(json).unwrap().build(
+                &[1; 32],
+                &[2; 32],
+                ProviderKeys::default(),
+            )
+        };
+        let ok = r#"{"routes": [
+            {"name": "local", "protocol": "openai", "base_url": "http://vllm", "auth": "none", "models": ["qwen*"]},
+            {"name": "deepseek", "protocol": "openai", "base_url": "https://api.deepseek.com", "api_prefix": "", "key_env": "AEGIS_TEST_ROUTE_KEY", "groups": ["devs"]}]}"#;
+        let st = build(ok).unwrap();
+        assert_eq!(st.routes.len(), 2);
+        assert_eq!(st.routes[1].upstream.api_key, "route-key");
+        assert_eq!(st.routes[1].upstream.api_prefix, "");
+        for (bad, why) in [
+            (
+                r#"{"routes": [{"name": "a b", "protocol": "openai", "base_url": "http://x", "auth": "none"}]}"#,
+                "name",
+            ),
+            (
+                r#"{"routes": [{"name": "a", "protocol": "grpc", "base_url": "http://x", "auth": "none"}]}"#,
+                "protocol",
+            ),
+            (
+                r#"{"routes": [{"name": "a", "protocol": "openai", "base_url": "http://x"}]}"#,
+                "key_env",
+            ),
+            (
+                r#"{"routes": [{"name": "a", "protocol": "openai", "base_url": "http://x", "key_env": "AEGIS_TEST_NOT_SET"}]}"#,
+                "not set",
+            ),
+            (
+                r#"{"routes": [{"name": "a", "protocol": "openai", "base_url": "http://x", "auth": "none"}, {"name": "a", "protocol": "openai", "base_url": "http://y", "auth": "none"}]}"#,
+                "twice",
+            ),
+            (
+                r#"{"routes": [{"name": "a", "protocol": "openai", "base_url": "http://x", "auth": "none", "extra": 1}]}"#,
+                "extra",
+            ),
+        ] {
+            let r = serde_json::from_str::<ServerConfig>(bad)
+                .map_err(|e| e.to_string())
+                .and_then(|c| {
+                    c.build(&[1; 32], &[2; 32], ProviderKeys::default())
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                });
+            assert!(r.unwrap_err().contains(why), "{bad}");
+        }
     }
 
     // REQ: PRO-15 — providers are independent: a config with one OpenAI-compatible provider and

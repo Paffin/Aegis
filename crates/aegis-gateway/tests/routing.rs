@@ -14,16 +14,24 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-type Seen = Arc<Mutex<Vec<(String, String)>>>;
+/// (path, body, authorization header)
+type Seen = Arc<Mutex<Vec<(String, String, String)>>>;
 
 async fn provider() -> (String, Seen) {
     let seen: Seen = Arc::default();
     let router = Router::new()
         .fallback(any(
-            |State(s): State<Seen>, uri: Uri, b: Bytes| async move {
-                s.lock()
-                    .unwrap()
-                    .push((uri.path().to_string(), String::from_utf8_lossy(&b).into()));
+            |State(s): State<Seen>, h: axum::http::HeaderMap, uri: Uri, b: Bytes| async move {
+                let auth = h
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                s.lock().unwrap().push((
+                    uri.path().to_string(),
+                    String::from_utf8_lossy(&b).into(),
+                    auth,
+                ));
                 "{}"
             },
         ))
@@ -98,4 +106,141 @@ async fn aliases_are_replaced_for_the_provider_in_every_protocol() {
     assert!(seen[1].1.contains("\"gpt-real-2\""));
     assert!(seen[2].1.contains("\"other\""));
     assert_eq!(seen[3].0, "/v1beta/models/gemini-real-3:generateContent");
+}
+
+// ---- RTE-01 ----------------------------------------------------------------------------------
+
+use aegis_gateway::server::{glob_match, Auth, Family, Route};
+
+// REQ: RTE-01
+#[test]
+fn glob_patterns() {
+    for (p, t, ok) in [
+        ("deepseek-*", "deepseek-chat", true),
+        ("deepseek-*", "deepseek-", true),
+        ("deepseek-*", "xdeepseek-chat", false),
+        ("*-coder", "qwen-coder", true),
+        ("*-coder", "qwen-coder-v2", false),
+        ("qwen*coder*", "qwen2.5-coder-32b", true),
+        ("a*b*c", "abc", true),
+        ("a*b*c", "acb", false),
+        ("exact", "exact", true),
+        ("exact", "exact2", false),
+        ("*", "anything", true),
+    ] {
+        assert_eq!(glob_match(p, t), ok, "{p} vs {t}");
+    }
+}
+
+#[derive(Clone, Default)]
+struct Buf(Arc<Mutex<Vec<u8>>>);
+impl std::io::Write for Buf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+// A request goes to the route its model and its group select, with that route's credentials,
+// and the audit event carries the route's name (the policy binds rules to it).
+#[tokio::test]
+async fn requests_follow_their_route() {
+    let (default_up, default_seen) = provider().await;
+    let (local_up, local_seen) = provider().await;
+    let (team_up, team_seen) = provider().await;
+    let keys = TenantKeys::from_secrets("t1", b"k-tenant", b"k-audit");
+    let engine = Engine::new(keys, DetectConfig::default(), Dictionary::default());
+    let mut vk = HashMap::new();
+    vk.insert(
+        hash_key("plain"),
+        Principal {
+            id: "u:plain".into(),
+            groups: vec![],
+        },
+    );
+    vk.insert(
+        hash_key("dev"),
+        Principal {
+            id: "u:dev".into(),
+            groups: vec!["devs".into()],
+        },
+    );
+    let mut st = AppState::new(engine, None, vk);
+    st.openai = Some(Upstream::openai(default_up, "default-key"));
+    st.routes = vec![
+        Route {
+            name: "local-vllm".into(),
+            family: Family::OpenAi,
+            models: vec!["qwen*".into()],
+            groups: vec![],
+            upstream: Upstream::openai(local_up, "").with_auth(Auth::Nothing),
+        },
+        Route {
+            name: "devs-only".into(),
+            family: Family::OpenAi,
+            models: vec!["gpt-*".into()],
+            groups: vec!["devs".into()],
+            upstream: Upstream::openai(team_up, "team-key"),
+        },
+    ];
+    let buf = Buf::default();
+    st.audit = aegis_gateway::audit::Audit::to_writer(buf.clone(), 100, false);
+    let st = Arc::new(st);
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gw = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app(st)).await.unwrap() });
+
+    let c = reqwest::Client::new();
+    let ask = |key: &'static str, model: &'static str| {
+        let c = c.clone();
+        let url = format!("{gw}/v1/chat/completions");
+        async move {
+            c.post(url)
+                .header("authorization", format!("Bearer {key}"))
+                .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    ask("plain", "qwen2.5-coder").await; // by model → local
+    ask("plain", "gpt-4o").await; // route for devs only → default
+    ask("dev", "gpt-4o").await; // by model and group → team
+    ask("dev", "other-model").await; // nothing matches → default
+    assert_eq!(local_seen.lock().unwrap().len(), 1);
+    assert_eq!(team_seen.lock().unwrap().len(), 1);
+    assert_eq!(default_seen.lock().unwrap().len(), 2);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let audit = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+    let routes: Vec<String> = audit
+        .lines()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["route"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        routes,
+        [
+            "local-vllm",
+            "openai-chat-default",
+            "devs-only",
+            "openai-chat-default"
+        ]
+    );
+
+    // credentials: the client's key never goes on; each route uses its own
+    assert_eq!(local_seen.lock().unwrap()[0].2, "");
+    assert_eq!(team_seen.lock().unwrap()[0].2, "Bearer team-key");
+    assert!(default_seen
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|s| s.2 == "Bearer default-key"));
 }

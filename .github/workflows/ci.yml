@@ -19,6 +19,8 @@ jobs:
       - run: cargo test --workspace
       - name: Trace requirements
         run: scripts/trace.sh
+      - name: Documents say what the requirements demand
+        run: scripts/docs-check.sh
       - name: Smoke test with real binaries
         run: scripts/smoke.sh
       - name: Detection quality gates (QA-05)

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 //! QA-07 canary test: values that policy masks must not appear in provider traffic, audit,
-//! metrics, logs, headers or error bodies. REQ: QA-07, SEC-01, INV-6, AUD-02, OBS-02.
+//! metrics, logs, headers or error bodies. REQ: QA-07, SEC-01, SEC-07, INV-6, AUD-02, OBS-02.
 
 use aegis_core::crypto::TenantKeys;
 use aegis_core::detect::{DetectConfig, Dictionary};

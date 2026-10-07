@@ -194,13 +194,13 @@ pub struct DefaultsDoc {
     /// Class → `allow|mask|drop_block|block_request`.
     #[serde(default)]
     pub ingress: BTreeMap<String, String>,
-    /// Only `drop_block` is implemented.
+    /// Images and documents: `drop_block` (replaced by a notice, default) or `block_request`.
     #[serde(default)]
     pub attachments: Option<String>,
-    /// Only `block_request` is implemented.
+    /// Embeddings requests: `mask` (the text goes through the pipeline, default) or `block_request`.
     #[serde(default)]
     pub embeddings: Option<String>,
-    /// Only `block_request` is implemented.
+    /// Only `block_request` is implemented: a server tool runs where Aegis cannot follow.
     #[serde(default)]
     pub provider_server_tools: Option<String>,
     /// Subset of `kind`, `has`, `len`.
@@ -276,6 +276,7 @@ pub struct Compiled {
     pub trifecta: TrifectaConfig,
     pub pseudo: PseudoConfig,
     pub response: crate::danger::ResponsePolicy,
+    pub request: crate::policy::RequestPolicy,
 }
 
 fn class_of(s: &str) -> Option<Class> {
@@ -544,15 +545,34 @@ impl PolicyDoc {
                 action: ingress_of(a).map_err(|e| format!("defaults.ingress: {e}"))?,
             });
         }
-        for (k, v, want) in [
-            ("attachments", &self.defaults.attachments, "drop_block"),
-            ("embeddings", &self.defaults.embeddings, "block_request"),
-            (
-                "provider_server_tools",
-                &self.defaults.provider_server_tools,
-                "block_request",
-            ),
-        ] {
+        let choice = |k: &str, v: &Option<String>, allowed: [&str; 2]| -> Result<bool, String> {
+            match v.as_deref() {
+                None => Ok(false),
+                Some(s) if s == allowed[0] => Ok(false),
+                Some(s) if s == allowed[1] => Ok(true),
+                Some(s) => Err(format!(
+                    "defaults.{k}: «{s}», допустимо {} или {}",
+                    allowed[0], allowed[1]
+                )),
+            }
+        };
+        let request = crate::policy::RequestPolicy {
+            block_attachments: choice(
+                "attachments",
+                &self.defaults.attachments,
+                ["drop_block", "block_request"],
+            )?,
+            block_embeddings: choice(
+                "embeddings",
+                &self.defaults.embeddings,
+                ["mask", "block_request"],
+            )?,
+        };
+        for (k, v, want) in [(
+            "provider_server_tools",
+            &self.defaults.provider_server_tools,
+            "block_request",
+        )] {
             if let Some(v) = v {
                 if v != want {
                     return Err(format!("defaults.{k}: значение «{v}» пока не поддерживается, допустимо только «{want}»"));
@@ -616,6 +636,7 @@ impl PolicyDoc {
             trifecta,
             pseudo,
             response,
+            request,
         })
     }
 
@@ -903,6 +924,35 @@ rules:
             (Act::Warn, Act::Deny, Act::Deny)
         );
         assert_eq!(r.extra.len(), 1);
+    }
+
+    // REQ: POL-05 — attachments and embeddings: the milder action by default, refusal on request.
+    #[test]
+    fn content_kinds_are_set_by_the_policy() {
+        let d = PolicyDoc::from_yaml("version: 1")
+            .unwrap()
+            .compile()
+            .unwrap()
+            .request;
+        assert!(!d.block_attachments && !d.block_embeddings);
+        let y = "version: 1\ndefaults: { attachments: block_request, embeddings: block_request }";
+        let r = PolicyDoc::from_yaml(y).unwrap().compile().unwrap().request;
+        assert!(r.block_attachments && r.block_embeddings);
+        let y = "version: 1\ndefaults: { attachments: drop_block, embeddings: mask }";
+        let r = PolicyDoc::from_yaml(y).unwrap().compile().unwrap().request;
+        assert!(!r.block_attachments && !r.block_embeddings);
+        assert!(
+            PolicyDoc::from_yaml("version: 1\ndefaults: { attachments: allow }")
+                .unwrap()
+                .compile()
+                .is_err()
+        );
+        assert!(
+            PolicyDoc::from_yaml("version: 1\ndefaults: { embeddings: drop_block }")
+                .unwrap()
+                .compile()
+                .is_err()
+        );
     }
 
     // REQ: POL-01 — strict schema: unknown fields and bad values are errors, never ignored.

@@ -23,6 +23,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 regex.workspace = true
 arc-swap.workspace = true
+zeroize.workspace = true
 ed25519-dalek.workspace = true
 base64.workspace = true
 

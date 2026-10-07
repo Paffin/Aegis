@@ -32,6 +32,8 @@ pub struct Engine {
     pub ingress: IngressPolicy,
     /// RSP-06, RSP-10: checks of the model's answer.
     pub response: aegis_core::danger::ResponsePolicy,
+    /// POL-05
+    pub request: aegis_core::policy::RequestPolicy,
     cache: Mutex<DetectCache>,
     /// DET-09: the longest a block may be scanned.
     pub detect_budget: Duration,
@@ -76,6 +78,7 @@ impl Engine {
             trifecta: TrifectaConfig::default(),
             ingress: IngressPolicy::default(),
             response: Default::default(),
+            request: Default::default(),
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }
@@ -114,17 +117,24 @@ impl Engine {
             trifecta: c.trifecta,
             ingress: c.ingress,
             response: c.response,
+            request: c.request,
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }
     }
 
+    /// DET-02, SEC-08: tenant, detector set and text decide the key; one tenant's entry is never
+    /// another's.
+    pub fn cache_key(&self, text: &str) -> [u8; 32] {
+        let mut h = self.hash_prefix.clone();
+        h.update(text.as_bytes());
+        h.finalize().into()
+    }
+
     /// Detection with a cache keyed by (tenant, block hash, detector version) (DET-02).
     /// The cache keeps positions and types only; the person key is stored hashed.
     pub fn scan(&self, text: &str) -> Scanned {
-        let mut h = self.hash_prefix.clone();
-        h.update(text.as_bytes());
-        let key: [u8; 32] = h.finalize().into();
+        let key = self.cache_key(text);
         if let Some((entities, grammar)) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
             return Scanned {
                 entities,
@@ -435,5 +445,26 @@ impl std::fmt::Debug for RequestCtx {
             self.request_id,
             self.mapping.len()
         )
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use aegis_core::detect::Dictionary;
+
+    fn engine(tenant: &str, det: DetectConfig) -> Engine {
+        let keys = TenantKeys::from_secrets(tenant, b"k-tenant-secret", b"k-audit-secret");
+        Engine::new(keys, det, Dictionary::default())
+    }
+
+    // REQ: SEC-08, DET-02 — the cache key depends on tenant, text and detector set.
+    #[test]
+    fn cache_keys_are_per_tenant_and_per_configuration() {
+        let a = engine("acme", DetectConfig::default());
+        let b = engine("globex", DetectConfig::default());
+        assert_eq!(a.cache_key("same text"), a.cache_key("same text"));
+        assert_ne!(a.cache_key("same text"), b.cache_key("same text"));
+        assert_ne!(a.cache_key("one"), a.cache_key("two"));
     }
 }

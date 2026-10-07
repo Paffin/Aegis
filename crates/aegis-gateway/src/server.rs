@@ -655,6 +655,25 @@ fn with_aegis_headers(mut r: Response, request_id: &str, summary: &str) -> Respo
     r
 }
 
+/// The two top-level fields the gateway needs before the adapter runs.
+#[derive(serde::Deserialize, Default)]
+struct Head {
+    model: Option<serde_json::Value>,
+    stream: Option<serde_json::Value>,
+}
+
+/// SEC-04 (best effort): overwrite the client's request buffer before it is freed. Works when the
+/// gateway holds the only reference, which is the case for a body read from the connection.
+pub fn wipe(body: Bytes) -> bool {
+    match body.try_into_mut() {
+        Ok(mut m) => {
+            zeroize::Zeroize::zeroize(m.as_mut());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 struct ReqInfo {
     /// OBS-03
     started_unix_ns: u64,
@@ -1127,12 +1146,13 @@ async fn proxy(
         .get("x-aegis-conversation")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
-    let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
+    // only `model` and `stream` are read; the rest of the body is skipped without being built
+    let head: Head = serde_json::from_slice(&body).unwrap_or_default();
     let model = match &gem {
         Some(g) => g.model.clone(),
-        None => parsed
+        None => head
+            .model
             .as_ref()
-            .and_then(|v| v.get("model"))
             .and_then(|m| m.as_str())
             .unwrap_or("")
             .chars()
@@ -1171,13 +1191,12 @@ async fn proxy(
     };
     let streaming = match &gem {
         Some(g) => g.kind == GemKind::Stream,
-        None => parsed
+        None => head
+            .stream
             .as_ref()
-            .and_then(|v| v.get("stream"))
             .and_then(|s| s.as_bool())
             .unwrap_or(false),
     };
-    drop(parsed);
 
     let t0 = Instant::now();
     let meta = ReqMeta {
@@ -1186,6 +1205,29 @@ async fn proxy(
         request_id: &rid,
         route: &route_name,
     };
+    // POL-05: kinds of content the policy refuses whole
+    if engine.request.block_embeddings
+        && (proto == Protocol::OpenAiEmbeddings
+            || gem
+                .as_ref()
+                .is_some_and(|g| g.kind == GemKind::Other && g.path.contains("mbedContent")))
+    {
+        complete(
+            &st,
+            &crate::engine::RequestCtx::empty(&rid),
+            &info,
+            "rejected",
+        );
+        return with_aegis_headers(
+            fail(
+                403,
+                "permission_error",
+                "Aegis: политика запрещает запросы эмбеддингов",
+            ),
+            &rid,
+            "",
+        );
+    }
     let transformed = match proto {
         Protocol::Anthropic => transform_request(&engine, &meta, &body),
         Protocol::OpenAiChat => openai_chat::transform_request(&engine, &meta, &body),
@@ -1194,6 +1236,21 @@ async fn proxy(
         Protocol::OpenAiEmbeddings => openai_embeddings::transform_request(&engine, &meta, &body),
         Protocol::Gemini => gemini::transform_request(&engine, &meta, &body),
     };
+    let transformed = transformed.and_then(|(out, ctx)| {
+        // the adapters replace attachments with the notice; with `block_request` that is a refusal
+        let notice = crate::engine::ATTACHMENT_NOTICE.as_bytes();
+        let has = |b: &[u8]| b.windows(notice.len()).any(|w| w == notice);
+        if engine.request.block_attachments && has(&out) && !has(&body) {
+            return Err(crate::anthropic::Reject {
+                status: 403,
+                kind: "permission_error",
+                message: "Aegis: политика запрещает изображения и документы в запросах".into(),
+            });
+        }
+        Ok((out, ctx))
+    });
+    // SEC-04: the request as the client sent it holds real values; it is not needed any more
+    wipe(body);
     let (new_body, ctx) = match transformed {
         Ok(x) => x,
         Err(rej) => {
@@ -1452,6 +1509,19 @@ impl IntoResponse for crate::anthropic::Reject {
 #[cfg(test)]
 mod client_tests {
     use super::*;
+
+    // REQ: SEC-04 — the buffer is overwritten when it can be, and left alone when it is shared.
+    #[test]
+    fn the_request_buffer_is_wiped_when_unshared() {
+        assert!(wipe(Bytes::from(b"password=Jd8@2jd82k".to_vec())));
+        let b = Bytes::from(b"shared".to_vec());
+        let other = b.clone();
+        assert!(!wipe(b));
+        assert_eq!(&other[..], b"shared");
+        let mut m = bytes::BytesMut::from(&b"secret"[..]);
+        zeroize::Zeroize::zeroize(m.as_mut());
+        assert!(m.iter().all(|x| *x == 0));
+    }
 
     // REQ: IAM-05 — `X-Aegis-Client` wins over `User-Agent`; both are only a label.
     #[test]

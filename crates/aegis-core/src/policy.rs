@@ -625,3 +625,14 @@ mod ingress_tests {
         );
     }
 }
+
+/// POL-05: what the policy does with whole kinds of content (`defaults.attachments`,
+/// `defaults.embeddings`). The default is the milder action: a notice instead of the attachment,
+/// masking instead of refusal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestPolicy {
+    /// Refuse a request that carries an image or a document instead of replacing it.
+    pub block_attachments: bool,
+    /// Refuse embeddings requests.
+    pub block_embeddings: bool,
+}

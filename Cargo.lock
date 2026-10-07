@@ -8,8 +8,13 @@ version = "0.1.0"
 dependencies = [
  "aegis-core",
  "aegis-gateway",
+ "axum",
+ "bytes",
  "clap",
+ "futures-util",
+ "reqwest",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

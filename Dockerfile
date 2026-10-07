@@ -2,7 +2,7 @@
 # Multi-stage build: static-ish release binaries in a minimal runtime image, non-root, no shell.
 FROM rust:1.97-slim AS build
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends pkg-config ca-certificates && rm -rf /var/lib/apt/lists/*
+# No system packages: TLS is rustls with built-in roots, there is no OpenSSL or pkg-config to install.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --release --locked -p aegis-gateway -p aegis-cli

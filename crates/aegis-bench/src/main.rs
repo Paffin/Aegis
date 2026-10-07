@@ -4,6 +4,7 @@
 //! `fp` scans a directory of ordinary open-source code and counts detections. Everything found
 //! in such code is a false positive by construction, so the rate per 10 000 lines is the metric.
 
+mod load;
 mod perf;
 mod recall;
 use aegis_core::detect::{DetectConfig, Dictionary, Pipeline};
@@ -31,6 +32,30 @@ enum Cmd {
         /// Fail if warm p95 exceeds this many milliseconds.
         #[arg(long)]
         max_warm_p95_ms: Option<f64>,
+    },
+    /// Concurrent streams and request rate through a real gateway (NFR-03, NFR-04).
+    Load {
+        #[arg(long)]
+        dir: PathBuf,
+        /// Size of the conversation in each request, KB (200k tokens is about 800 KB).
+        #[arg(long, default_value_t = 800)]
+        kb: usize,
+        #[arg(long, default_value_t = 30)]
+        rps: u32,
+        /// How long the request rate is held.
+        #[arg(long, default_value_t = 15)]
+        seconds: u64,
+        /// How long each provider stream lasts; rps x stream_secs = streams in flight.
+        #[arg(long, default_value_t = 7)]
+        stream_secs: u64,
+        #[arg(long, default_value_t = 40)]
+        ttfb_samples: usize,
+        /// Fail if the gateway adds more than this to the time to first byte (p95, ms).
+        #[arg(long)]
+        max_ttfb_overhead_p95_ms: Option<f64>,
+        /// Fail if fewer streams were in flight at the peak.
+        #[arg(long)]
+        min_streams: Option<usize>,
     },
     /// Recall per type on a synthetic positive corpus.
     Recall {
@@ -87,6 +112,30 @@ fn main() {
             dir,
             max_warm_p95_ms,
         } => return perf::run(kb, iterations, &dir, max_warm_p95_ms),
+        Cmd::Load {
+            dir,
+            kb,
+            rps,
+            seconds,
+            stream_secs,
+            ttfb_samples,
+            max_ttfb_overhead_p95_ms,
+            min_streams,
+        } => {
+            let ok = load::run(
+                &dir,
+                load::Opts {
+                    kb,
+                    rps,
+                    seconds,
+                    stream_secs,
+                    ttfb_samples,
+                    max_ttfb_overhead_p95_ms,
+                    min_streams,
+                },
+            );
+            std::process::exit(if ok { 0 } else { 1 });
+        }
         Cmd::Fp {
             dir,
             ext,

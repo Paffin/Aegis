@@ -28,3 +28,24 @@ jobs:
           cargo run -q --release -p aegis-bench -- perf --dir "$HOME/.cargo/registry/src" --kb 800 --iterations 15 --max-warm-p95-ms 50
       - name: Demo (README walkthrough keeps working)
         run: scripts/demo.sh
+      - name: Load test (NFR-03, NFR-04)
+        run: cargo run -q --release -p aegis-bench -- load --dir "$HOME/.cargo/registry/src" --seconds 10 --stream-secs 8 --max-ttfb-overhead-p95-ms 100 --min-streams 200
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Helm chart renders
+        run: |
+          helm lint deploy/helm/aegis --set config.bundle.source=https://example/bundle.json --set 'config.bundle.trustedKeys={00}'
+          helm template aegis deploy/helm/aegis --set config.bundle.source=https://example/bundle.json --set 'config.bundle.trustedKeys={00}' > /dev/null
+      - name: Build the image
+        run: docker build -t aegis:ci .
+      - name: The image starts read-only, as non-root, and answers
+        run: |
+          mkdir -p "$RUNNER_TEMP/cfg"
+          HASH=$(printf %s aegis-vk-ci | sha256sum | cut -d' ' -f1)
+          printf '{"listen":"127.0.0.1:18080","admin_listen":"127.0.0.1:19090","anthropic_base_url":"http://127.0.0.1:1","virtual_keys":[{"sha256":"%s","principal":"u:ci"}]}' "$HASH" > "$RUNNER_TEMP/cfg/gateway.json"
+          docker run -d --name aegis --network host --read-only --cap-drop ALL --security-opt no-new-privileges             -v "$RUNNER_TEMP/cfg:/etc/aegis:ro" -e AEGIS_K_TENANT=0123456789abcdef0123456789abcdef             -e AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 -e AEGIS_ANTHROPIC_KEY=x aegis:ci
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:19090/readyz && break; sleep 0.5; done
+          curl -sf http://127.0.0.1:19090/readyz
+          test "$(docker inspect aegis --format '{{.Config.User}}')" = nonroot

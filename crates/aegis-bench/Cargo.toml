@@ -9,6 +9,11 @@ aegis-core.workspace = true
 aegis-gateway = { path = "../aegis-gateway" }
 serde_json.workspace = true
 clap.workspace = true
+tokio.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
 
 [lints]
 workspace = true

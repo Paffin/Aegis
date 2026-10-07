@@ -51,11 +51,12 @@ fn conversation(files: &[(String, String)], kb: usize) -> Vec<Value> {
     msgs
 }
 
-pub fn run(kb: usize, iterations: usize, dir: &Path, max_warm_p95_ms: Option<f64>) {
+/// The text files a coding agent would read: every 7th source file of the corpus.
+pub fn corpus(dir: &Path) -> Vec<(String, String)> {
     let mut paths = vec![];
     collect(dir, &mut paths);
     paths.sort();
-    let files: Vec<(String, String)> = paths
+    paths
         .iter()
         .step_by(7)
         .filter_map(|p| {
@@ -64,7 +65,11 @@ pub fn run(kb: usize, iterations: usize, dir: &Path, max_warm_p95_ms: Option<f64
                 .filter(|t| t.len() > 500 && t.len() < 60_000)
                 .map(|t| (p.strip_prefix(dir).unwrap_or(p).display().to_string(), t))
         })
-        .collect();
+        .collect()
+}
+
+pub fn run(kb: usize, iterations: usize, dir: &Path, max_warm_p95_ms: Option<f64>) {
+    let files = corpus(dir);
     let mut msgs = conversation(&files, kb);
     let history_kb = msgs.iter().map(|m| m.to_string().len()).sum::<usize>() / 1024;
     let keys = TenantKeys::from_secrets("bench", b"k-tenant-0123456789", b"k-audit-0123456789");

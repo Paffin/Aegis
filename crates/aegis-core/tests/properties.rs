@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used)]
-//! REQ: QA-04, SEC-10, INV-1, INV-3, INV-4 — property-based tests of the core.
+//! REQ: QA-04, SEC-10, INV-1, INV-3, INV-4, INV-5 — property-based tests of the core.
 //!
 //! Random text is built from noise and from fragments that carry known sensitive values; the
 //! properties must hold for every combination, not only for hand-picked examples.
@@ -251,6 +251,41 @@ proptest! {
             };
             let out = restore(&foreign, &m, &RestorePolicy::default(), &ctx);
             prop_assert_eq!(&out.text, &foreign, "sink {:?}", sink);
+        }
+    }
+
+    /// INV-5: a call that writes a file never reaches the client with a marker in it: it is
+    /// denied, or every marker was replaced by its value.
+    #[test]
+    fn files_never_receive_markers(
+        (text, _) in text_with_values(),
+        foreign in prop::option::of("[a-z2-7]{8}"),
+        path in prop::sample::select(vec!["x", "src/a.rs", "config/database.yaml"]),
+    ) {
+        let f = fx();
+        let (masked, m) = mask(f, std::slice::from_ref(&text));
+        let mut body = masked[0].clone();
+        if let Some(id) = foreign {
+            body.push_str(&format!("\n[[SECRET_{id} kind=password]]"));
+        }
+        let tri = TrifectaConfig::default();
+        let ctx = SinkContext {
+            sink: Sink::FileWrite,
+            tool: "Write",
+            target_path: Some(path),
+            detect: &f.det,
+            trifecta_cfg: &tri,
+            trifecta: TrifectaState::default(),
+            precleared: false,
+        };
+        let out = restore(&body, &m, &RestorePolicy::default(), &ctx);
+        if out.allowed() {
+            prop_assert!(
+                !aegis_core::pseudo::marker_grammar().is_match(&out.text)
+                    && !out.text.contains(".aegis.invalid"),
+                "marker written to a file: {:?}",
+                out.text
+            );
         }
     }
 

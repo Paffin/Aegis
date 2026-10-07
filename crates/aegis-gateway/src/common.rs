@@ -69,6 +69,8 @@ pub fn tool_path(input: &Value) -> Option<String> {
         "notebook_path",
         "target_file",
         "filename",
+        // Gemini CLI and Qwen Code
+        "absolute_path",
     ]
     .iter()
     .find_map(|k| input.get(*k).and_then(|v| v.as_str()).map(String::from))

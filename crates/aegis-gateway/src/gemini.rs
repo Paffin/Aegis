@@ -286,7 +286,16 @@ fn restore_parts(engine: &Engine, ctx: &mut RequestCtx, parts: &mut Vec<Value>) 
         }
     }
     for n in notes {
-        keep.push(json!({"text": n}));
+        // never glued to the text before it
+        let sep = if keep
+            .iter()
+            .any(|p| p.get("text").is_some_and(|t| !t.is_null()))
+        {
+            "\n"
+        } else {
+            ""
+        };
+        keep.push(json!({"text": format!("{sep}{n}")}));
     }
     *parts = keep;
 }
@@ -331,6 +340,7 @@ struct Cand {
     pending: String,
     hinted: bool,
     done: bool,
+    had_text: bool,
 }
 
 pub struct GeminiStreamTransformer<'e> {
@@ -438,6 +448,7 @@ impl<'e> GeminiStreamTransformer<'e> {
                     if text.is_empty() && !signed {
                         continue;
                     }
+                    st.had_text = true;
                     p["text"] = Value::String(text);
                     out_parts.push(p);
                     continue;
@@ -462,7 +473,14 @@ impl<'e> GeminiStreamTransformer<'e> {
                             p[k]["args"] = serde_json::from_str(&a).unwrap_or(args);
                             out_parts.push(p);
                         }
-                        Err(text) => out_parts.push(json!({"text": text})),
+                        Err(text) => {
+                            let sep = if st.had_text || !out_parts.is_empty() {
+                                "\n"
+                            } else {
+                                ""
+                            };
+                            out_parts.push(json!({"text": format!("{sep}{text}")}));
+                        }
                     }
                 } else {
                     out_parts.push(p);

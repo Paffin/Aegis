@@ -583,46 +583,83 @@ fn complete(
 async fn messages(
     State(st): State<Arc<AppState>>,
     method: Method,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::Anthropic, method, headers, body, None).await
+    let query = uri.query().unwrap_or("").to_string();
+    proxy(st, Protocol::Anthropic, method, headers, body, None, query).await
 }
 
 async fn responses(
     State(st): State<Arc<AppState>>,
     method: Method,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiResponses, method, headers, body, None).await
+    let query = uri.query().unwrap_or("").to_string();
+    proxy(
+        st,
+        Protocol::OpenAiResponses,
+        method,
+        headers,
+        body,
+        None,
+        query,
+    )
+    .await
 }
 
 async fn chat_completions(
     State(st): State<Arc<AppState>>,
     method: Method,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiChat, method, headers, body, None).await
+    let query = uri.query().unwrap_or("").to_string();
+    proxy(st, Protocol::OpenAiChat, method, headers, body, None, query).await
 }
 
 async fn completions(
     State(st): State<Arc<AppState>>,
     method: Method,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiCompletions, method, headers, body, None).await
+    let query = uri.query().unwrap_or("").to_string();
+    proxy(
+        st,
+        Protocol::OpenAiCompletions,
+        method,
+        headers,
+        body,
+        None,
+        query,
+    )
+    .await
 }
 
 async fn embeddings(
     State(st): State<Arc<AppState>>,
     method: Method,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    proxy(st, Protocol::OpenAiEmbeddings, method, headers, body, None).await
+    let query = uri.query().unwrap_or("").to_string();
+    proxy(
+        st,
+        Protocol::OpenAiEmbeddings,
+        method,
+        headers,
+        body,
+        None,
+        query,
+    )
+    .await
 }
 
 /// `/v1beta/models/<model>:<action>` and `/v1/models/<model>:<action>`.
@@ -660,7 +697,16 @@ async fn gemini_model(
         model: model.chars().take(80).collect(),
         kind,
     };
-    proxy(st, Protocol::Gemini, method, headers, body, Some(target)).await
+    proxy(
+        st,
+        Protocol::Gemini,
+        method,
+        headers,
+        body,
+        Some(target),
+        String::new(),
+    )
+    .await
 }
 
 async fn gemini_list(State(st): State<Arc<AppState>>, headers: HeaderMap, uri: Uri) -> Response {
@@ -803,6 +849,7 @@ async fn proxy(
     headers: HeaderMap,
     body: Bytes,
     gem: Option<GemTarget>,
+    query: String,
 ) -> Response {
     let fail = |status, kind, msg: &str| err_response_for(proto, status, kind, msg);
     if method != Method::POST {
@@ -821,7 +868,7 @@ async fn proxy(
         );
     }
     let engine = st.engine.load_full();
-    let raw_query = gem.as_ref().map(|g| g.query.as_str()).unwrap_or("");
+    let raw_query = gem.as_ref().map_or(query.as_str(), |g| g.query.as_str());
     let principal = match authenticate_q(&headers, &st, raw_query) {
         Ok(p) => p,
         Err(r) => {
@@ -934,12 +981,13 @@ async fn proxy(
 
     let url = match &gem {
         Some(g) => up_cfg.url(&g.path, &forward_query(&g.query)),
+        // The query goes through (Claude Code sends `?beta=true`), minus the client's `key=`.
         None => up_cfg.url(
             &match proto {
                 Protocol::Anthropic => proto.endpoint().to_string(),
                 _ => format!("{}{}", up_cfg.api_prefix, proto.endpoint()),
             },
-            "",
+            &forward_query(&query),
         ),
     };
     let up = st
@@ -1066,6 +1114,7 @@ fn tokio_stream_from(
 
 async fn count_tokens(
     State(st): State<Arc<AppState>>,
+    uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -1108,7 +1157,10 @@ async fn count_tokens(
     };
     match st
         .http
-        .post(up.url("/v1/messages/count_tokens", ""))
+        .post(up.url(
+            "/v1/messages/count_tokens",
+            &forward_query(uri.query().unwrap_or("")),
+        ))
         .headers(provider_headers(&headers, Protocol::Anthropic, up))
         .body(new_body)
         .send()

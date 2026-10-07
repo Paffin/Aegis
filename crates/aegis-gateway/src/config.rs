@@ -319,8 +319,8 @@ impl ServerConfig {
             provider_keys.openai,
             "AEGIS_OPENAI_KEY",
         )?;
-        if let (Some(o), Some(p)) = (openai.take(), &self.openai_api_prefix) {
-            openai = Some(o.with_prefix(p));
+        if let Some(p) = &self.openai_api_prefix {
+            openai = openai.map(|o| o.with_prefix(p));
         }
         let gemini = provider(
             &self.gemini_base_url,
@@ -370,6 +370,61 @@ mod tests {
             st.keys.load().contains_key("ab12"),
             "hashes are matched case-insensitively"
         );
+    }
+
+    // REQ: PRO-15 — providers are independent: a config with one OpenAI-compatible provider and
+    // nothing else builds (found with the real Codex CLI), with and without a path prefix,
+    // and keyless local models need no key.
+    #[test]
+    fn providers_are_independent() {
+        let build = |json: &str, keys: ProviderKeys| -> Result<AppState, ConfigError> {
+            serde_json::from_str::<ServerConfig>(json)
+                .unwrap()
+                .build(&[1; 32], &[2; 32], keys)
+        };
+        let openai_key = || ProviderKeys {
+            openai: Some("ok".into()),
+            ..Default::default()
+        };
+        let st = build(r#"{"openai_base_url": "http://x"}"#, openai_key()).unwrap();
+        assert!(st.anthropic.is_none() && st.gemini.is_none());
+        assert_eq!(st.openai.as_ref().unwrap().api_prefix, "/v1");
+        let st = build(
+            r#"{"openai_base_url": "http://x", "openai_api_prefix": "/api/v3"}"#,
+            openai_key(),
+        )
+        .unwrap();
+        assert_eq!(st.openai.as_ref().unwrap().api_prefix, "/api/v3");
+        let st = build(
+            r#"{"openai_base_url": "http://x", "openai_api_prefix": ""}"#,
+            openai_key(),
+        )
+        .unwrap();
+        assert_eq!(st.openai.as_ref().unwrap().api_prefix, "");
+        // local model without a key
+        let st = build(
+            r#"{"openai_base_url": "http://x", "openai_auth": "none"}"#,
+            ProviderKeys::default(),
+        )
+        .unwrap();
+        assert!(st.openai.is_some());
+        // a key is required when the provider needs one; at least one provider is required
+        assert!(build(
+            r#"{"openai_base_url": "http://x"}"#,
+            ProviderKeys::default()
+        )
+        .is_err());
+        assert!(build("{}", ProviderKeys::default()).is_err());
+        let st = build(
+            r#"{"gemini_base_url": "http://g", "anthropic_base_url": "http://a"}"#,
+            ProviderKeys {
+                gemini: Some("g".into()),
+                anthropic: Some("a".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(st.gemini.is_some() && st.anthropic.is_some() && st.openai.is_none());
     }
 
     // REQ: SEC-03, NFR-09 — weak or missing keys stop the process.

@@ -492,6 +492,8 @@ struct ChoiceState {
     tools: BTreeMap<u64, ToolAcc>,
     removed: bool,
     kept: bool,
+    /// Something was already shown as text: an explanation of a denied call starts a new line.
+    had_text: bool,
 }
 
 pub struct ChatStreamTransformer<'e> {
@@ -569,6 +571,7 @@ impl<'e> ChatStreamTransformer<'e> {
                 let release: String = st.pending.drain(..cut).collect();
                 let (restored, h) = restore_text(self.engine, &self.ctx, &release);
                 st.hinted |= h;
+                st.had_text |= !restored.is_empty();
                 keep_delta.insert("content".into(), Value::String(restored));
                 if cut == 0 {
                     keep_delta.remove("content");
@@ -607,6 +610,7 @@ impl<'e> ChatStreamTransformer<'e> {
                     restored.push_str("\n[Aegis: значение секрета скрыто]");
                 }
                 if !restored.is_empty() {
+                    st.had_text = true;
                     let mut d = keep_delta.clone();
                     d.insert("content".into(), Value::String(restored));
                     out.extend(chunk_like(&base, idx, Value::Object(d), Value::Null));
@@ -622,6 +626,14 @@ impl<'e> ChatStreamTransformer<'e> {
                         }
                         Err(text) => {
                             removed = true;
+                            // never glued to the text before it (a host followed by `[Aegis]`
+                            // is not recognised as a host when the history comes back)
+                            let text = if st.had_text {
+                                format!("\n{text}")
+                            } else {
+                                text
+                            };
+                            st.had_text = true;
                             out.extend(chunk_like(
                                 &base,
                                 idx,
@@ -1052,6 +1064,33 @@ mod tests {
         let s = String::from_utf8(out).unwrap();
         assert!(!s.contains("Jd8@2jd82k"), "{s}");
         assert!(s.contains("reasoning_content"));
+    }
+
+    // The explanation of a denied call starts a new line: glued to the restored text before it
+    // (`prod-db01.corp.local[Aegis]`) it would hide a host from the next request's detector.
+    #[test]
+    fn denial_after_text_starts_on_a_new_line() {
+        let e = engine();
+        let (_, ctx) = transform_request(&e, &meta(), &session()).unwrap();
+        let h = pseudonym(&ctx, aegis_core::EntityType::Host);
+        let s = pseudonym(&ctx, aegis_core::EntityType::Secret);
+        let bad = serde_json::to_string(&json!({"command": format!("echo {s}")})).unwrap();
+        let mut stream = chunk(json!({"content": format!("Проверяю {h}")}), Value::Null);
+        stream += &chunk(
+            json!({"tool_calls": [{"index": 0, "id": "b", "type": "function", "function": {"name": "execute_command", "arguments": bad}}]}),
+            Value::Null,
+        );
+        stream += &chunk(json!({}), json!("tool_calls"));
+        let (out, _) = run(&e, ctx, &stream, 64);
+        let text = content_of(&out);
+        assert!(
+            text.contains("prod-db01.pay.corp.local\n[Aegis]")
+                || text.contains(
+                    "prod-db01.pay.corp.local
+[Aegis]"
+                ),
+            "{text:?}"
+        );
     }
 
     #[test]

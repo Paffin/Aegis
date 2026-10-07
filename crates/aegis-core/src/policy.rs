@@ -52,12 +52,26 @@ impl Sink {
             | "replace_in_file"
             | "edit_file"
             | "str_replace_editor"
-            | "str_replace_based_edit_tool" => Sink::FileWrite,
+            | "str_replace_based_edit_tool"
+            // Gemini CLI and Qwen Code, OpenCode, Continue, Cursor-style agents
+            | "write_file"
+            | "replace"
+            | "write"
+            | "edit"
+            | "create_file"
+            | "insert_edit_into_file"
+            | "apply_diff"
+            | "patch" => Sink::FileWrite,
             "Read" | "Glob" | "Grep" | "NotebookRead" | "LS" | "read_file" | "list_files"
-            | "search_files" | "list_dir" | "grep_search" => Sink::FileRead,
-            "WebFetch" | "WebSearch" | "web_search" | "browser_action" => Sink::Network,
-            "Task" => Sink::Agent,
-            t if t.starts_with("mcp__") => Sink::Mcp,
+            | "search_files" | "list_dir" | "grep_search" | "read" | "glob" | "grep" | "list"
+            | "read_many_files" | "list_directory" | "search_file_content" | "view_image" => {
+                Sink::FileRead
+            }
+            "WebFetch" | "WebSearch" | "web_search" | "browser_action" | "web_fetch" | "webfetch"
+            | "google_web_search" => Sink::Network,
+            "Task" | "task" => Sink::Agent,
+            "use_mcp_tool" | "access_mcp_resource" => Sink::Mcp,
+            t if t.starts_with("mcp__") || t.starts_with("mcp_") => Sink::Mcp,
             _ => Sink::Unknown,
         })
     }
@@ -79,6 +93,12 @@ pub fn is_shell_tool(tool: &str) -> bool {
             | "run_command"
             | "shell_command"
             | "container.exec"
+            // Codex (`exec_command`, `cmd`), Gemini CLI and Qwen Code, OpenCode, Amazon Q
+            | "exec_command"
+            | "run_shell_command"
+            | "bash"
+            | "execute_bash"
+            | "run_terminal_command"
     )
 }
 
@@ -381,6 +401,32 @@ mod tests {
         assert_eq!(Sink::from_tool("execute_command"), None);
         assert_eq!(Sink::from_tool("write_to_file"), Some(Sink::FileWrite));
         assert_eq!(Sink::from_tool("SomethingNew"), Some(Sink::Unknown));
+    }
+
+    // REQ: RST-04 — tool names of the other agents (the real Codex CLI sends `exec_command`).
+    #[test]
+    fn sinks_by_tool_of_other_agents() {
+        for shell in ["exec_command", "run_shell_command", "bash", "execute_bash"] {
+            assert!(is_shell_tool(shell), "{shell}");
+            assert_eq!(Sink::from_tool(shell), None);
+        }
+        for (tool, sink) in [
+            ("write_file", Sink::FileWrite),
+            ("replace", Sink::FileWrite),
+            ("write", Sink::FileWrite),
+            ("edit", Sink::FileWrite),
+            ("read_many_files", Sink::FileRead),
+            ("list_directory", Sink::FileRead),
+            ("search_file_content", Sink::FileRead),
+            ("web_fetch", Sink::Network),
+            ("webfetch", Sink::Network),
+            ("google_web_search", Sink::Network),
+            ("task", Sink::Agent),
+            ("use_mcp_tool", Sink::Mcp),
+            ("mcp_github_create_issue", Sink::Mcp),
+        ] {
+            assert_eq!(Sink::from_tool(tool), Some(sink), "{tool}");
+        }
     }
 
     // REQ: POL-07, POL-08, ДОП-6

@@ -763,7 +763,10 @@ impl Detector for InfraDetector {
                 || after_at
                 || next.is_some_and(|c| {
                     c.is_alphanumeric()
-                        || matches!(c, '_' | '(' | '[')
+                        || matches!(c, '_' | '(')
+                        // `host[0]` is indexing, but `host[Aegis]` is a host that an Aegis
+                        // explanation was glued to
+                        || c == '[' && !text[m.end()..].starts_with("[Aegis")
                         || c == '.'
                             && text[m.end() + 1..]
                                 .chars()
@@ -1572,6 +1575,20 @@ mod tests {
                 "{t}"
             );
         }
+    }
+
+    // REQ: DET-04 — a host with an Aegis explanation glued to it is still a host (the real
+    // Qwen Code client sent `prod-db01.corp.local[Aegis] ...` back in the history), `host[0]` is not.
+    #[test]
+    fn host_before_an_aegis_explanation() {
+        let f = found("Проверяю prod-db01.pay.corp.local[Aegis] Вызов отклонён");
+        assert!(
+            f.iter().any(|(_, v)| v == "prod-db01.pay.corp.local"),
+            "{f:?}"
+        );
+        assert!(!found("x = rows.pay.corp.local[0]")
+            .iter()
+            .any(|(_, v)| v.contains("corp.local")));
     }
 
     // REQ: DET-04 — credentials on a command line (found by the property test).

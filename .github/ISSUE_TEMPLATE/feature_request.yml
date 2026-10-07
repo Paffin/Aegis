@@ -1,0 +1,11 @@
+name: Предложение
+description: Клиент, провайдер или возможность
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes: { label: Что нужно и для какой задачи }
+    validations: { required: true }
+  - type: textarea
+    id: wire
+    attributes: { label: Для нового клиента или провайдера, description: "Протокол, адреса, как задаётся base URL, пример запроса без значений" }

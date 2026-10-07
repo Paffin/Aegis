@@ -1,0 +1,18 @@
+name: Ложное срабатывание или пропуск детектора
+description: Aegis замаскировал лишнее или не заметил значение
+labels: [detection]
+body:
+  - type: markdown
+    attributes:
+      value: Опишите тип и контекст, а не само значение. Если пропущен настоящий секрет, подставьте похожий синтетический.
+  - type: dropdown
+    id: kind
+    attributes: { label: Что, options: [Ложное срабатывание, Пропуск] }
+    validations: { required: true }
+  - type: input
+    id: type
+    attributes: { label: Тип и вид (из `aegis scan`), placeholder: "SECRET/password, HOST, EMAIL…" }
+  - type: textarea
+    id: ctx
+    attributes: { label: Контекст (язык, формат файла, строка с синтетическим значением) }
+    validations: { required: true }

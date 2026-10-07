@@ -208,7 +208,7 @@ mod tests {
         }
     }
 
-    // REQ: PRO-02 — prompt and suffix of fill-in-the-middle are both scanned.
+    // REQ: PRO-13 — prompt and suffix of fill-in-the-middle are both scanned.
     #[test]
     fn prompt_and_suffix_are_masked() {
         let body = json!({"model":"m","prompt":"let url = \"postgres://prod-db01.pay.corp.local/x\";\n","suffix":"// password = \"Jd8@2jd82k\"\n","max_tokens":16}).to_string();
@@ -231,7 +231,7 @@ mod tests {
         assert!(transform_request(&engine(), &meta(), tokens.as_bytes()).is_err());
     }
 
-    // REQ: RST-01 — the pseudonym in the completion is restored for the editor.
+    // REQ: PRO-13, RST-01 — the pseudonym in the completion is restored for the editor.
     #[test]
     fn response_and_stream_restore_text() {
         let e = engine();

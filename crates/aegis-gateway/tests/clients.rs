@@ -2,7 +2,7 @@
 //! Other clients and providers over real HTTP: Gemini, legacy completions, embeddings,
 //! Azure-style and keyless providers, provider path prefixes (Zhipu, Volcengine),
 //! model lists, compressed bodies.
-//! REQ: PRO-01, PRO-02, PRO-10, IAM-01, IAM-02, API-01.
+//! REQ: PRO-14, PRO-15, PRO-16, PRO-13, PRO-08, IAM-01, IAM-02, API-01.
 
 use aegis_core::crypto::TenantKeys;
 use aegis_core::detect::{DetectConfig, Dictionary};
@@ -122,7 +122,7 @@ fn gemini_request() -> Value {
     })
 }
 
-// REQ: IAM-01, IAM-02 — the virtual key may arrive in the query (Gemini SDKs) or in the header;
+// REQ: PRO-14, PRO-16, IAM-01, IAM-02 — the virtual key may arrive in the query (Gemini SDKs) or in the header;
 // the provider sees neither the query key nor the client's header, only its own.
 #[tokio::test]
 async fn gemini_round_trip_with_key_in_query_and_header() {
@@ -314,7 +314,7 @@ async fn gemini_other_actions_models_and_errors() {
     );
 }
 
-// REQ: PRO-02 — autocomplete (prefix and suffix) and indexing (embeddings) are masked;
+// REQ: PRO-13, PRO-08 — autocomplete (prefix and suffix) and indexing (embeddings) are masked;
 // the vectors pass through byte for byte.
 #[tokio::test]
 async fn completions_and_embeddings() {
@@ -369,7 +369,7 @@ async fn completions_and_embeddings() {
     }
 }
 
-// Azure OpenAI v1 (`api-key` header), Zhipu (`/api/paas/v4`), keyless local models.
+// REQ: PRO-15 — Azure OpenAI v1 (`api-key` header), Zhipu (`/api/paas/v4`), keyless local models.
 #[tokio::test]
 async fn provider_auth_styles_and_path_prefixes() {
     let ok = json_ok(
@@ -447,7 +447,7 @@ async fn provider_auth_styles_and_path_prefixes() {
         .any(|v| v.contains("aegis-vk-dev")));
 }
 
-// Anthropic-compatible endpoints of Kimi, GLM, DeepSeek and others take a Bearer token.
+// REQ: PRO-15 — Anthropic-compatible endpoints of Kimi, GLM, DeepSeek and others take a Bearer token.
 #[tokio::test]
 async fn anthropic_compatible_provider_with_bearer_token() {
     let (up, m) = mock(json_ok(json!({"id": "m", "type": "message", "role": "assistant", "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}))).await;
@@ -473,7 +473,7 @@ async fn anthropic_compatible_provider_with_bearer_token() {
     no_real_values(&calls[0].body);
 }
 
-// `/v1/models` is answered by the provider the client's key style points at.
+// REQ: PRO-15, PRO-16 — `/v1/models` is answered by the provider the client's key style points at.
 #[tokio::test]
 async fn model_lists_follow_the_client_style() {
     let (a_up, a) = mock(json_ok(json!({"data": [{"id": "claude-x"}]}))).await;
@@ -521,7 +521,7 @@ async fn model_lists_follow_the_client_style() {
     );
 }
 
-// A compressed body cannot be scanned, so it is refused instead of forwarded.
+// REQ: PRO-16 — A compressed body cannot be scanned, so it is refused instead of forwarded.
 #[tokio::test]
 async fn compressed_bodies_are_refused() {
     let (up, m) = mock(json_ok(json!({}))).await;
@@ -538,6 +538,7 @@ async fn compressed_bodies_are_refused() {
     assert!(m.calls.lock().unwrap().is_empty());
 }
 
+// REQ: PRO-15
 #[tokio::test]
 async fn protocol_without_a_provider_is_not_found() {
     let gw = gateway(|_| {}).await;

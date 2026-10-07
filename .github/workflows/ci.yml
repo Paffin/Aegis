@@ -2,6 +2,11 @@ name: ci
 on:
   push:
   pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -21,3 +26,5 @@ jobs:
           cargo run -q --release -p aegis-bench -- recall --n 1000 --min-recall 98
           cargo run -q --release -p aegis-bench -- fp --dir "$HOME/.cargo/registry/src" --samples 0 --max-per-10k 8
           cargo run -q --release -p aegis-bench -- perf --dir "$HOME/.cargo/registry/src" --kb 800 --iterations 15 --max-warm-p95-ms 50
+      - name: Demo (README walkthrough keeps working)
+        run: scripts/demo.sh

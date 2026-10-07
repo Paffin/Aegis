@@ -77,7 +77,8 @@ impl TestDoc {
     }
 }
 
-fn pipeline(c: &mut Compiled) -> Pipeline {
+/// Detection pipeline of a compiled policy (built-in detectors, dictionary, custom detectors).
+pub fn pipeline(c: &mut Compiled) -> Pipeline {
     let mut p = Pipeline::new(c.detect.clone(), std::mem::take(&mut c.dict));
     for d in std::mem::take(&mut c.custom) {
         p.add_detector(Box::new(d));

@@ -1,0 +1,8 @@
+ingress:
+  - text: "host prod-db01.corp.local password=Jd8@2jd82k"
+    expect:
+      - { contains: "prod-db01.corp.local", type: HOST, action: mask }
+      - { contains: "Jd8@2jd82k", type: SECRET, action: mask }
+  - text: "token ACME-TKN-AB12CD34EF56"
+    expect:
+      - { contains: "ACME-TKN-AB12CD34EF56", type: SECRET, action: mask }

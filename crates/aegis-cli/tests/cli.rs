@@ -319,3 +319,54 @@ fn report_summarises_audit_without_values() {
     assert!(none.contains("запросов: 1"), "{none}");
     assert!(err(&aegis(&["report", &f, "--since", "yesterday"])).contains("YYYY-MM-DD"));
 }
+
+// REQ: CFG-08 — `aegis scan` shows what would be masked without ever printing the values.
+#[test]
+fn scan_reports_findings_without_values_and_masks_on_request() {
+    let d = Dir::new("scan");
+    let f = d.write(
+        "app.env",
+        "DB_URL=postgres://svc:Jd8@2jd82k@prod-db01.pay.corp.local:5432/x\nAWS_KEY=AKIAIOSFODNN7EXAMPLE\n",
+    );
+    d.write("clean.txt", "just text\n");
+
+    let o = aegis(&["scan", &f, "--zone", "corp.local"]);
+    let (out, errs) = (
+        String::from_utf8_lossy(&o.stdout).to_string(),
+        String::from_utf8_lossy(&o.stderr).to_string(),
+    );
+    assert!(o.status.success());
+    assert!(out.contains("SECRET/password") && out.contains("SECRET/aws") && out.contains("HOST"));
+    for text in [&out, &errs] {
+        assert!(
+            !text.contains("Jd8@2jd82k")
+                && !text.contains("prod-db01")
+                && !text.contains("AKIAIOSFODNN7"),
+            "a value was printed: {text}"
+        );
+    }
+
+    // masked text: values gone, markers present, structure kept
+    let masked = ok(&aegis(&["scan", &f, "--zone", "corp.local", "--mask"]));
+    assert!(!masked.contains("Jd8@2jd82k") && !masked.contains("prod-db01"));
+    assert!(masked.contains("[[SECRET_") && masked.contains("aegis.invalid"));
+    assert!(masked.starts_with("DB_URL=postgres://"));
+
+    // exit status for pre-commit and CI
+    assert!(aegis(&["scan", &d.p("clean.txt"), "--fail-on-findings"])
+        .status
+        .success());
+    assert_eq!(
+        aegis(&["scan", &f, "--fail-on-findings"]).status.code(),
+        Some(1)
+    );
+
+    // a directory is walked, JSON is one object per finding
+    let json = ok(&aegis(&["scan", d.0.to_str().unwrap(), "--json"]));
+    let first: serde_json::Value = serde_json::from_str(json.lines().next().unwrap()).unwrap();
+    assert!(first["file"].as_str().unwrap().ends_with("app.env"));
+    assert!(first.get("value").is_none());
+
+    // --mask needs exactly one input
+    assert!(err(&aegis(&["scan", d.0.to_str().unwrap(), "--mask"])).contains("exactly one"));
+}

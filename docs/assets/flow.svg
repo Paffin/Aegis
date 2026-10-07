@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="440" viewBox="0 0 1040 440" role="img" aria-label="Как работает Aegis">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#14b8a6"/>
+    </linearGradient>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#94a3b8"/>
+    </marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 10 5 0 10z" fill="#5eead4"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #e2e8f0; }
+    .t { font-size: 17px; font-weight: 700; }
+    .s { font-size: 13px; fill: #94a3b8; }
+    .m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 12.5px; }
+    .card { fill: #111827; stroke: #334155; stroke-width: 1.5; }
+    .step { fill: #1e293b; stroke: #475569; stroke-width: 1; }
+    .num { fill: url(#g); }
+  </style>
+  <rect width="1040" height="440" rx="18" fill="#0b1220"/>
+
+  <!-- client -->
+  <rect class="card" x="28" y="64" width="236" height="214" rx="14"/>
+  <text class="t" x="46" y="96">Клиент</text>
+  <text class="s" x="46" y="118">разработчик или агент</text>
+  <text class="s" x="46" y="150">Claude Code · Codex</text>
+  <text class="s" x="46" y="170">Gemini CLI · Cline · Continue</text>
+  <text class="s" x="46" y="190">Qwen Code · Kimi CLI · Aider</text>
+  <text class="s" x="46" y="210">OpenCode · Zed · Open WebUI</text>
+  <text class="s" x="46" y="240">виртуальный ключ вместо</text>
+  <text class="s" x="46" y="258">ключа провайдера</text>
+
+  <!-- gateway -->
+  <rect x="320" y="28" width="400" height="286" rx="16" fill="#0f172a" stroke="url(#g)" stroke-width="2.5"/>
+  <circle cx="352" cy="62" r="14" fill="url(#g)"/>
+  <path d="M352 53l9 3.4v7c0 5.4-3.6 8.4-9 11-5.4-2.6-9-5.6-9-11v-7z" fill="#fff"/>
+  <text class="t" x="376" y="68">Aegis gateway</text>
+
+  <rect class="step" x="344" y="92" width="352" height="46" rx="9"/>
+  <circle class="num" cx="368" cy="115" r="12"/><text x="368" y="120" text-anchor="middle" style="font-size:13px;font-weight:700;fill:#fff">1</text>
+  <text x="392" y="111" style="font-size:14px;font-weight:600">Найти</text>
+  <text class="s" x="392" y="128">секреты, хосты, ПДн, словари, свои правила</text>
+
+  <rect class="step" x="344" y="146" width="352" height="46" rx="9"/>
+  <circle class="num" cx="368" cy="169" r="12"/><text x="368" y="174" text-anchor="middle" style="font-size:13px;font-weight:700;fill:#fff">2</text>
+  <text x="392" y="165" style="font-size:14px;font-weight:600">Заменить псевдонимами</text>
+  <text class="s" x="392" y="182">без хранилища, формат значения сохранён</text>
+
+  <rect class="step" x="344" y="200" width="352" height="46" rx="9"/>
+  <circle class="num" cx="368" cy="223" r="12"/><text x="368" y="228" text-anchor="middle" style="font-size:13px;font-weight:700;fill:#fff">3</text>
+  <text x="392" y="219" style="font-size:14px;font-weight:600">Применить политику</text>
+  <text class="s" x="392" y="236">подписанный бандл, правило трёх условий</text>
+
+  <rect class="step" x="344" y="254" width="352" height="46" rx="9"/>
+  <circle class="num" cx="368" cy="277" r="12"/><text x="368" y="282" text-anchor="middle" style="font-size:13px;font-weight:700;fill:#fff">4</text>
+  <text x="392" y="273" style="font-size:14px;font-weight:600">Вернуть значения по месту назначения</text>
+  <text class="s" x="392" y="290">в текст и файл — да, в сетевую команду — нет</text>
+
+  <!-- provider -->
+  <rect class="card" x="776" y="64" width="236" height="214" rx="14"/>
+  <text class="t" x="794" y="96">Модель</text>
+  <text class="s" x="794" y="118">облако или локально</text>
+  <text class="s" x="794" y="150">Anthropic · OpenAI · Azure</text>
+  <text class="s" x="794" y="170">Gemini · DeepSeek · Qwen</text>
+  <text class="s" x="794" y="190">Kimi · GLM · MiniMax · Doubao</text>
+  <text class="s" x="794" y="210">vLLM · Ollama · SGLang</text>
+  <text class="s" x="794" y="240">видит только псевдонимы</text>
+
+  <!-- arrows -->
+  <path d="M266 130H318" stroke="#94a3b8" stroke-width="2" marker-end="url(#a)"/>
+  <path d="M722 130H774" stroke="#94a3b8" stroke-width="2" marker-end="url(#a)"/>
+  <path d="M774 214H722" stroke="#5eead4" stroke-width="2" marker-end="url(#b)"/>
+  <path d="M318 214H266" stroke="#5eead4" stroke-width="2" marker-end="url(#b)"/>
+
+  <!-- examples -->
+  <rect x="28" y="334" width="984" height="78" rx="12" fill="#111827" stroke="#334155"/>
+  <text class="s" x="48" y="358">клиент → провайдер</text>
+  <text class="m" x="196" y="358" style="fill:#fca5a5">prod-db01.corp.local</text>
+  <text class="m" x="372" y="358" style="fill:#94a3b8">→</text>
+  <text class="m" x="400" y="358" style="fill:#5eead4">h-fmksdwiq.db.prod.z-hi7bfqk6.aegis.invalid</text>
+  <text class="m" x="196" y="380" style="fill:#fca5a5">password: "Jd8@2jd82k"</text>
+  <text class="m" x="372" y="380" style="fill:#94a3b8">→</text>
+  <text class="m" x="400" y="380" style="fill:#5eead4">[[SECRET_prkcbmhz kind=password has=at]]</text>
+  <text class="s" x="48" y="402">модель → клиент</text>
+  <text class="m" x="196" y="402" style="fill:#5eead4">psql -h h-fmksdwiq…</text>
+  <text class="m" x="372" y="402" style="fill:#94a3b8">→</text>
+  <text class="m" x="400" y="402" style="fill:#86efac">psql -h prod-db01.corp.local</text>
+  <text class="m" x="640" y="402" style="fill:#fca5a5">curl … -d [[SECRET…]]  ✕ отказ</text>
+</svg>

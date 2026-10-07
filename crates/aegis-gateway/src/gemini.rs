@@ -554,7 +554,7 @@ mod tests {
         .unwrap()
     }
 
-    // REQ: PRO-01, PRO-10 — values in every part are masked, the rest is byte-identical.
+    // REQ: PRO-14, PRO-10 — values in every part are masked, the rest is byte-identical.
     #[test]
     fn request_is_masked_and_structure_kept() {
         let (out, ctx) = transform_request(&engine(), &meta(), &session()).unwrap();
@@ -586,6 +586,7 @@ mod tests {
         assert!(ctx.stats.blocks_total > 3);
     }
 
+    // REQ: PRO-14
     #[test]
     fn snake_case_spelling_is_covered_too() {
         let body = serde_json::to_vec(&json!({
@@ -602,6 +603,7 @@ mod tests {
         assert!(s.contains("Aegis notice"));
     }
 
+    // REQ: PRO-14, PSE-10
     #[test]
     fn notice_is_added_when_there_is_no_system_instruction() {
         for body in [
@@ -623,7 +625,7 @@ mod tests {
         }
     }
 
-    // REQ: PRO-09
+    // REQ: PRO-09, PRO-14
     #[test]
     fn server_side_tools_and_cached_content_are_refused() {
         for body in [
@@ -685,6 +687,7 @@ mod tests {
         assert!(p["text"].as_str().unwrap().contains("[Aegis]"));
     }
 
+    // REQ: PRO-14
     #[test]
     fn json_array_form_of_streaming_is_restored() {
         let e = engine();
@@ -755,6 +758,7 @@ mod tests {
         assert_eq!(got, "Проверьте prod-db01.pay.corp.local сейчас");
     }
 
+    // REQ: PRO-14, RSP-07
     #[test]
     fn stream_denies_a_call_with_a_pseudonym() {
         let e = engine();

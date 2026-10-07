@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod scan;
+
 #[derive(Parser)]
 #[command(name = "aegis", about = "Aegis administration", version)]
 struct Cli {
@@ -36,6 +38,28 @@ enum Cmd {
     Policy {
         #[command(subcommand)]
         cmd: PolicyCmd,
+    },
+    /// What would Aegis mask in these files or directories? Runs the gateway's detectors and
+    /// ingress rules locally; values are never printed.
+    Scan {
+        /// Files, directories, or `-` for standard input.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Use the detectors and rules of this policy.
+        #[arg(long)]
+        policy: Option<PathBuf>,
+        /// Internal DNS zone (repeatable); ignored with `--policy`.
+        #[arg(long = "zone")]
+        zones: Vec<String>,
+        /// Print the masked text of a single file instead of the findings.
+        #[arg(long)]
+        mask: bool,
+        /// One JSON object per finding.
+        #[arg(long)]
+        json: bool,
+        /// Exit with status 1 when something is found (pre-commit, CI).
+        #[arg(long)]
+        fail_on_findings: bool,
     },
     /// Summary of an audit file: a period, or one agent task (AUD-05).
     Report {
@@ -213,6 +237,26 @@ fn now() -> i64 {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
+        Cmd::Scan {
+            paths,
+            policy,
+            zones,
+            mask,
+            json,
+            fail_on_findings,
+        } => {
+            let found = scan::run(scan::Options {
+                paths,
+                policy,
+                zones,
+                mask,
+                json,
+            })?;
+            if found && fail_on_findings {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         Cmd::Keys {
             cmd: KeysCmd::Generate { out },
         } => {

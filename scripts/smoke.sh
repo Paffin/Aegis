@@ -61,11 +61,11 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
 PY
 
 cat > "$W/gw.json" <<JSON
-{"listen":"127.0.0.1:$PORT","admin_listen":"127.0.0.1:$ADMIN","upstream_base_url":"http://127.0.0.1:$UP",
+{"listen":"127.0.0.1:$PORT","admin_listen":"127.0.0.1:$ADMIN","anthropic_base_url":"http://127.0.0.1:$UP",
  "audit_path":"$W/audit.jsonl",
  "bundle":{"source":"$W/bundle.json","cache_path":"$W/cache.json","trusted_keys":["$PUB"],"reload_seconds":1}}
 JSON
-export AEGIS_K_TENANT=0123456789abcdef0123456789abcdef AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 AEGIS_PROVIDER_KEY=pk
+export AEGIS_K_TENANT=0123456789abcdef0123456789abcdef AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 AEGIS_ANTHROPIC_KEY=pk
 $BIN/aegis-gateway "$W/gw.json" > "$W/gw.log" 2>&1 &
 GW=$!
 sleep 1.5

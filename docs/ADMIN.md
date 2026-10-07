@@ -6,8 +6,8 @@
 
 | Бинарник | Назначение |
 |---|---|
-| `aegis-gateway` | Прокси между клиентами и провайдерами: Anthropic Messages, OpenAI Chat Completions, OpenAI Responses (без состояния) |
-| `aegis` | Администрирование: ключи подписи, сборка и проверка бандла политики, тесты политики, виртуальные ключи, отчёты по аудиту |
+| `aegis-gateway` | Прокси между клиентами и провайдерами: Anthropic Messages, OpenAI (Chat Completions, Responses без состояния, Completions, Embeddings), Google Gemini |
+| `aegis` | Администрирование: ключи подписи, сборка и проверка бандла политики, тесты политики, виртуальные ключи, отчёты по аудиту, `aegis scan` (что было бы замаскировано в ваших файлах) |
 | `aegis-bench` | Измерения качества: ложные срабатывания, полнота, задержка |
 
 ## 2. Запуск
@@ -22,22 +22,38 @@ aegis-gateway /etc/aegis/gateway.json
 |---|---|
 | `AEGIS_K_TENANT` | Ключ тенанта `K_t`, не короче 16 байт. Из него считаются псевдонимы |
 | `AEGIS_K_AUDIT` | Ключ аудита, не короче 16 байт. Должен отличаться от `K_t` |
-| `AEGIS_PROVIDER_KEY` | Ключ Anthropic. Клиентам не выдаётся |
-| `AEGIS_OPENAI_KEY` | Ключ OpenAI-совместимого провайдера (нужен, если задан `openai_base_url`) |
+| `AEGIS_ANTHROPIC_KEY` | Ключ провайдера Anthropic (прежнее имя `AEGIS_PROVIDER_KEY` тоже работает). Нужен, если задан `anthropic_base_url` |
+| `AEGIS_OPENAI_KEY` | Ключ OpenAI-совместимого провайдера. Нужен, если задан `openai_base_url` и `openai_auth` не `none` |
+| `AEGIS_GEMINI_KEY` | Ключ Gemini. Нужен, если задан `gemini_base_url` |
 
-Без ключей процесс не стартует. Если бандл настроен, но действительного бандла нет, процесс отвечает 503 и `readyz` не готов (fail-closed).
+Ключи провайдеров клиентам не выдаются. Без `K_t`, `K_audit` и ключа каждого настроенного провайдера процесс не стартует. Если бандл настроен, но действительного бандла нет, процесс отвечает 503 и `readyz` не готов (fail-closed).
 
 ### Конфигурация (`gateway.json`)
 
 | Ключ | Значение |
 |---|---|
 | `listen`, `admin_listen` | Адреса основного и служебного портов. Служебный порт (`/healthz`, `/readyz`, `/metrics`) не должен быть доступен клиентам |
-| `upstream_base_url` | Провайдер Anthropic |
-| `openai_base_url` | OpenAI-совместимый провайдер; включает `/v1/chat/completions` и `/v1/responses` |
+| `anthropic_base_url` (прежнее имя `upstream_base_url`), `anthropic_auth` | Провайдер Anthropic Messages и способ передачи ключа |
+| `openai_base_url`, `openai_api_prefix`, `openai_auth` | OpenAI-совместимый провайдер: Chat Completions, Responses, Completions, Embeddings |
+| `gemini_base_url` | Google Gemini API |
+
+Нужен хотя бы один провайдер. Подробности, адреса и примеры для DeepSeek, Qwen, Kimi, GLM, Azure, Ollama и других — в [PROVIDERS.md](PROVIDERS.md). Файл примера — [examples/gateway.json](../examples/gateway.json).
+
+
 | `tenant` | Идентификатор тенанта |
 | `bundle` | `source` (путь или URL), `cache_path`, `trusted_keys` (hex открытых ключей), `reload_seconds` (1–30) |
 | `audit_path`, `audit_required`, `audit_queue` | Файл аудита JSONL (по умолчанию stdout), остановка трафика при переполнении очереди, размер очереди |
 | `internal_zones`, `company_ranges`, `service_account_patterns`, `employees`, `terms`, `virtual_keys` | Те же настройки без бандла. С бандлом их задаёт политика |
+
+### Проверка до внедрения
+
+```
+aegis scan path/to/repo --zone corp.local          # что будет замаскировано: файл, строка, тип, правило; значения не выводятся
+aegis scan config.env --mask                       # тот же файл с подставленными псевдонимами
+aegis scan . --policy policy.yaml --fail-on-findings   # в CI или pre-commit
+```
+
+Команда использует те же детекторы и правила, что и gateway, работает локально и без ключей.
 
 ## 3. Политика и бандл
 
@@ -106,7 +122,7 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 
 | Заголовок | Направление | Назначение |
 |---|---|---|
-| `x-api-key` или `Authorization: Bearer` | запрос | Виртуальный ключ |
+| `x-api-key`, `Authorization: Bearer`, `api-key`, `x-goog-api-key` или `?key=` | запрос | Виртуальный ключ (принимается любой из способов) |
 | `X-Aegis-Conversation` | запрос, необязательный | Якорь соли псевдонимов |
 | `X-Aegis-Request-Id`, `X-Aegis-Summary` | ответ | Идентификатор и счётчики по классам |
 
@@ -115,7 +131,9 @@ aegis report audit.jsonl --conversation <хеш разговора>   # одна
 ## 7. Ограничения
 
 - Только режим без состояния: `previous_response_id`, `item_reference`, `store: true`, Assistants, Files и Batches отклоняются.
-- Серверные инструменты провайдера (web search, code execution, MCP connector) отключены.
+- Серверные инструменты провайдера (web search, code execution, MCP connector, `enable_search` у Qwen, `$web_search` у Kimi, `retrieval` у GLM, `googleSearch` у Gemini) отключены.
+- Сжатые тела запросов (`Content-Encoding`) отклоняются: 415.
+- Один провайдер на семейство протоколов в одном экземпляре.
 - Изображения и PDF заменяются текстовым уведомлением.
-- Cursor и GitHub Copilot ходят через серверы вендоров и в gateway не направляются; для них действует только блокировка на периметре (`deploy/egress`).
+- Cursor, Windsurf и встроенные подсказки GitHub Copilot ходят через серверы вендоров и в gateway не направляются; для них действует только блокировка на периметре (`deploy/egress`). Полный список клиентов — в [CLIENTS.md](CLIENTS.md).
 - Образ контейнера и Helm-чарт не собирались и не рендерились в среде разработки: проверьте их в вашем кластере.

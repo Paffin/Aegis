@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=aegis
 Group=aegis
-# Secrets live in a root-owned file, mode 0600 (AEGIS_K_TENANT, AEGIS_K_AUDIT, AEGIS_PROVIDER_KEY, AEGIS_OPENAI_KEY).
+# Secrets live in a root-owned file, mode 0600 (AEGIS_K_TENANT, AEGIS_K_AUDIT, AEGIS_ANTHROPIC_KEY, AEGIS_OPENAI_KEY, AEGIS_GEMINI_KEY).
 EnvironmentFile=/etc/aegis/secrets.env
 ExecStart=/usr/local/bin/aegis-gateway /etc/aegis/gateway.json
 Restart=on-failure

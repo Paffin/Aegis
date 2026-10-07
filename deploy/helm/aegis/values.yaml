@@ -7,8 +7,12 @@ replicaCount: 2
 
 # Gateway configuration written to /etc/aegis/gateway.json (see docs/ADMIN.md).
 config:
-  upstreamBaseUrl: https://api.anthropic.com
-  openaiBaseUrl: ""        # set to enable /v1/chat/completions and /v1/responses
+  anthropicBaseUrl: https://api.anthropic.com   # "" to disable /v1/messages
+  anthropicAuth: ""        # x-api-key (default) or bearer
+  openaiBaseUrl: ""        # set to enable /v1/chat/completions, /v1/responses, /v1/completions, /v1/embeddings
+  openaiApiPrefix: ""      # default /v1; /v4 for Zhipu (https://open.bigmodel.cn/api/paas), /api/v3 for Volcengine
+  openaiAuth: ""           # bearer (default), api-key (Azure) or none (local models)
+  geminiBaseUrl: ""        # set to enable /v1beta/models/*:generateContent
   tenant: default
   auditPath: /var/log/aegis/audit.jsonl
   auditRequired: false
@@ -18,7 +22,8 @@ config:
     reloadSeconds: 15
 
 # Secrets are taken from an existing Secret (never from values).
-# Required keys: AEGIS_K_TENANT, AEGIS_K_AUDIT, AEGIS_PROVIDER_KEY; optional: AEGIS_OPENAI_KEY.
+# Required keys: AEGIS_K_TENANT, AEGIS_K_AUDIT, and one key per configured provider:
+# AEGIS_ANTHROPIC_KEY, AEGIS_OPENAI_KEY (not with openaiAuth: none), AEGIS_GEMINI_KEY.
 existingSecret: aegis-secrets
 
 service:

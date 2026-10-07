@@ -1,0 +1,28 @@
+name: Ошибка
+description: Что-то работает не так (не уязвимость: о них см. SECURITY.md)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Если значение дошло до провайдера или попало в журнал, это может быть уязвимость: не пишите здесь, откройте закрытое сообщение (см. SECURITY.md). Настоящие ключи и данные не прикладывайте.
+  - type: input
+    id: version
+    attributes: { label: Версия или коммит }
+    validations: { required: true }
+  - type: dropdown
+    id: client
+    attributes:
+      label: Клиент или протокол
+      options: [Claude Code, Codex CLI, Gemini CLI, Cline / Roo / Kilo, Continue, Aider, Qwen Code / Kimi CLI, OpenCode / Goose / Zed, SDK, Другой]
+    validations: { required: true }
+  - type: input
+    id: provider
+    attributes: { label: Провайдер за Aegis, placeholder: "Anthropic, OpenAI, DeepSeek, Qwen, Ollama…" }
+  - type: textarea
+    id: what
+    attributes: { label: Что произошло и что ожидалось, description: Приложите X-Aegis-Request-Id и текст ошибки }
+    validations: { required: true }
+  - type: textarea
+    id: repro
+    attributes: { label: Как воспроизвести, description: Запрос с синтетическими значениями, фрагмент конфигурации без ключей }

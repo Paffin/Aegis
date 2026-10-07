@@ -1,0 +1,39 @@
+# Пример политики Aegis. Проверка: aegis policy test examples/policy.yaml examples/policy-tests.yaml
+version: 1
+tenant: acme
+
+zones:
+  internal: [corp.local, company.ru]
+  company_ranges: ["10.50.0.0/16"]
+
+detectors:
+  service_account_patterns: ['\bacme_[a-z]+_svc\b']
+  custom:
+    - id: acme-token
+      type: SECRET
+      regex: 'ACME-TKN-([A-Z0-9]{12})'
+      group: 1
+      examples:
+        matches: ["ACME-TKN-AB12CD34EF56"]
+        non_matches: ["ACME-TKN-x"]
+
+dictionary:
+  employees:
+    - { first: Иван, last: Петров }
+  terms:
+    - { form: InternalPaymentSystem, type: SYSTEM }
+
+# Правило трёх условий: приватные данные + недоверенный контент => сетевые вызовы запрещены.
+trifecta:
+  mode: enforce
+  allow_destinations: ["docs.python.org"]
+
+defaults:
+  ingress: { SECRET: mask, INFRA: mask, PII: mask, CORP: mask }
+  secret_attributes: [kind, has]
+
+rules:
+  # Закрытый ключ в запросе — отказ всему запросу, а не маскирование.
+  - { id: R-020, when: { type: SECRET, kind: pem }, ingress: block_request }
+  # В сетевую команду секрет не подставляется никогда, внутренние хосты — можно.
+  - { id: R-112, when: { sink: [shell_network, network] }, restore: { SECRET: deny, INFRA: internal_only } }

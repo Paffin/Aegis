@@ -73,7 +73,7 @@ mod tests {
         }
     }
 
-    // REQ: PRO-02 — file contents sent for indexing are masked.
+    // REQ: PRO-08 — file contents sent for indexing are masked.
     #[test]
     fn indexed_files_are_masked() {
         let file = "DB_URL=postgres://svc:Jd8@2jd82k@prod-db01.pay.corp.local/x\nAWS_KEY=AKIAIOSFODNN7EXAMPLE";
@@ -86,6 +86,7 @@ mod tests {
         }
     }
 
+    // REQ: PRO-08
     #[test]
     fn same_text_gets_same_vector_input_within_a_run() {
         let a = json!({"model":"m","input":"host prod-db01.pay.corp.local"}).to_string();
@@ -94,6 +95,7 @@ mod tests {
         assert_eq!(x, y);
     }
 
+    // REQ: PRO-08
     #[test]
     fn token_input_is_refused() {
         let b = json!({"model":"m","input":[[1,2],[3]]}).to_string();

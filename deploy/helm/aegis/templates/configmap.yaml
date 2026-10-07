@@ -8,9 +8,23 @@ data:
     {
       "listen": "0.0.0.0:8080",
       "admin_listen": "0.0.0.0:9090",
-      "upstream_base_url": {{ .Values.config.upstreamBaseUrl | quote }},
+      {{- if .Values.config.anthropicBaseUrl }}
+      "anthropic_base_url": {{ .Values.config.anthropicBaseUrl | quote }},
+      {{- if .Values.config.anthropicAuth }}
+      "anthropic_auth": {{ .Values.config.anthropicAuth | quote }},
+      {{- end }}
+      {{- end }}
       {{- if .Values.config.openaiBaseUrl }}
       "openai_base_url": {{ .Values.config.openaiBaseUrl | quote }},
+      {{- if .Values.config.openaiApiPrefix }}
+      "openai_api_prefix": {{ .Values.config.openaiApiPrefix | quote }},
+      {{- end }}
+      {{- if .Values.config.openaiAuth }}
+      "openai_auth": {{ .Values.config.openaiAuth | quote }},
+      {{- end }}
+      {{- end }}
+      {{- if .Values.config.geminiBaseUrl }}
+      "gemini_base_url": {{ .Values.config.geminiBaseUrl | quote }},
       {{- end }}
       "tenant": {{ .Values.config.tenant | quote }},
       "audit_path": {{ .Values.config.auditPath | quote }},

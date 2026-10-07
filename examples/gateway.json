@@ -1,0 +1,15 @@
+{
+  "listen": "0.0.0.0:8080",
+  "admin_listen": "127.0.0.1:9090",
+  "anthropic_base_url": "https://api.anthropic.com",
+  "openai_base_url": "https://api.openai.com",
+  "gemini_base_url": "https://generativelanguage.googleapis.com",
+  "tenant": "acme",
+  "audit_path": "/var/log/aegis/audit.jsonl",
+  "bundle": {
+    "source": "/etc/aegis/bundle.json",
+    "cache_path": "/var/lib/aegis/bundle.cache.json",
+    "trusted_keys": ["<публичный ключ подписи: aegis keys generate>"],
+    "reload_seconds": 15
+  }
+}

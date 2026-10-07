@@ -37,6 +37,7 @@ aegis-gateway /etc/aegis/gateway.json
 | `openai_base_url`, `openai_api_prefix`, `openai_auth` | OpenAI-совместимый провайдер: Chat Completions, Responses, Completions, Embeddings |
 | `gemini_base_url` | Google Gemini API |
 | `model_aliases` | Псевдонимы моделей: `{"claude-default": "claude-sonnet-..."}`. Клиент просит стабильное имя, провайдеру уходит настоящее; смена модели не требует правки клиентов. Работает для всех протоколов, у Gemini имя заменяется в пути |
+| `detect_cache_mb`, `detect_budget_ms` | Память кэша обнаружения (1024 МБ, вытеснение LRU, на диск не пишется) и время на проверку одного блока (2000 мс). Блок, который не успели проверить, или проверка которого упала, заменяется на `[Aegis: блок не проверен и удалён]`, запрос не отклоняется; событие аудита получает `detector_faults`, метрика `aegis_detector_faults_total{kind}` растёт |
 | `max_concurrent_requests` | Запросов одновременно (по умолчанию 1000, потоки считаются на всё время потока). Лишний запрос получает 503 с `Retry-After: 1` до чтения тела |
 | `upstream_connect_timeout_secs`, `upstream_read_timeout_secs` | Ожидание соединения с провайдером (10) и молчания провайдера до ответа и между кусками потока (300). По истечении — 502 |
 | `tenant` | Идентификатор тенанта |

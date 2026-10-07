@@ -3,13 +3,19 @@
 
 use crate::json::Node;
 use aegis_core::crypto::{Salt, TenantKeys};
-use aegis_core::detect::{DetectConfig, Pipeline};
+use aegis_core::detect::{DetectConfig, Pipeline, ScanFault};
 use aegis_core::policy::{Ingress, IngressPolicy, RestorePolicy, TrifectaConfig, TrifectaState};
 use aegis_core::pseudo::{Mapping, PseudoConfig, Pseudonymizer, Source};
 use aegis_core::types::{Class, Entity, EntityType};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::Duration;
+
+/// DET-09: time one detector pass over one block may take.
+pub const DEFAULT_DETECT_BUDGET: Duration = Duration::from_secs(2);
+/// DET-03: memory the detection cache may hold per node.
+pub const DEFAULT_CACHE_BYTES: usize = 1 << 30;
 
 /// PSE-10 / API-05: constant per policy version so the prompt cache stays valid.
 pub const NOTICE: &str = "Aegis notice: some values in this context are replaced with pseudonyms.\nMarkers like [[TYPE_id ...]], hostnames ending in .aegis.invalid, IPv4 addresses\nin 240.0.0.0/4 and IPv6 addresses in 3fff::/20 stand for real values.\nCopy them exactly as written. Do not modify them, do not build new names from them,\nand do not try to guess the real values. Treat them as valid in code and commands.";
@@ -25,6 +31,8 @@ pub struct Engine {
     pub trifecta: TrifectaConfig,
     pub ingress: IngressPolicy,
     cache: Mutex<DetectCache>,
+    /// DET-09: the longest a block may be scanned.
+    pub detect_budget: Duration,
     /// SHA-256 state after tenant and detector version; cloned per block (DET-02 cache key).
     hash_prefix: Sha256,
 }
@@ -45,6 +53,8 @@ pub struct Scanned {
     pub grammar: bool,
     /// Served from the detection cache.
     pub hit: bool,
+    /// The scan did not finish (DET-09): `entities` is empty and must not be taken for "clean".
+    pub fault: Option<ScanFault>,
 }
 
 impl Engine {
@@ -63,8 +73,26 @@ impl Engine {
             restore_policy: RestorePolicy::default(),
             trifecta: TrifectaConfig::default(),
             ingress: IngressPolicy::default(),
-            cache: Mutex::new(DetectCache::new(200_000)),
+            cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
+            detect_budget: DEFAULT_DETECT_BUDGET,
         }
+    }
+
+    /// DET-03, DET-09: memory for the detection cache and the time budget for a block.
+    pub fn with_limits(mut self, cache_bytes: usize, budget: Duration) -> Self {
+        self.cache = Mutex::new(DetectCache::new(cache_bytes));
+        self.detect_budget = budget;
+        self
+    }
+
+    /// The limits to carry over to a new engine (a bundle reload).
+    pub fn limits(&self) -> (usize, Duration) {
+        let cap = self
+            .cache
+            .lock()
+            .map(|c| c.cap)
+            .unwrap_or(DEFAULT_CACHE_BYTES);
+        (cap, self.detect_budget)
     }
 
     /// Build the engine from a compiled bundle policy (CFG-01). Keys never come from the bundle.
@@ -82,7 +110,8 @@ impl Engine {
             restore_policy: c.restore,
             trifecta: c.trifecta,
             ingress: c.ingress,
-            cache: Mutex::new(DetectCache::new(200_000)),
+            cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
+            detect_budget: DEFAULT_DETECT_BUDGET,
         }
     }
 
@@ -97,9 +126,21 @@ impl Engine {
                 entities,
                 grammar,
                 hit: true,
+                fault: None,
             };
         }
-        let mut ents = self.pipeline.scan(text);
+        let mut ents = match self.pipeline.scan_limited(text, self.detect_budget) {
+            Ok(e) => e,
+            // a block that was not checked is not cached and not reported clean
+            Err(f) => {
+                return Scanned {
+                    entities: vec![],
+                    grammar: false,
+                    hit: false,
+                    fault: Some(f),
+                }
+            }
+        };
         for e in &mut ents {
             if let Some(pk) = e.person_key.take() {
                 let d = Sha256::digest(pk.as_bytes());
@@ -114,6 +155,7 @@ impl Engine {
             entities: ents,
             grammar,
             hit: false,
+            fault: None,
         }
     }
 
@@ -125,9 +167,10 @@ impl Engine {
 /// Entities of a block and whether it contains pseudonym-like text.
 type CachedScan = (Vec<Entity>, bool);
 
-/// Approximate LRU with a bounded number of entries; never persisted (DET-03).
+/// Approximate LRU bounded by an estimate of the memory it holds; never persisted (DET-03).
 struct DetectCache {
     cap: usize,
+    used: usize,
     tick: u64,
     map: HashMap<[u8; 32], (CachedScan, u64)>,
 }
@@ -136,9 +179,14 @@ impl DetectCache {
     fn new(cap: usize) -> Self {
         Self {
             cap,
+            used: 0,
             tick: 0,
             map: HashMap::new(),
         }
+    }
+    /// Key, tick, bookkeeping and the entities of one entry.
+    fn size(v: &CachedScan) -> usize {
+        96 + v.0.len() * std::mem::size_of::<Entity>()
     }
     fn get(&mut self, k: &[u8; 32]) -> Option<CachedScan> {
         self.tick += 1;
@@ -150,13 +198,29 @@ impl DetectCache {
     }
     fn put(&mut self, k: [u8; 32], v: CachedScan) {
         self.tick += 1;
-        if self.map.len() >= self.cap {
+        let add = Self::size(&v);
+        if add > self.cap {
+            return;
+        }
+        if self.used + add > self.cap {
+            // drop the least recently used tenth, or more if that is not enough
             let mut ticks: Vec<u64> = self.map.values().map(|(_, t)| *t).collect();
             ticks.sort_unstable();
-            let cut = ticks[ticks.len() / 10];
-            self.map.retain(|_, (_, t)| *t > cut);
+            let mut at = ticks.len() / 10;
+            loop {
+                let cut = ticks.get(at).copied().unwrap_or(u64::MAX);
+                self.map.retain(|_, (_, t)| *t > cut);
+                self.used = self.map.values().map(|(v, _)| Self::size(v)).sum();
+                if self.used + add <= self.cap || self.map.is_empty() {
+                    break;
+                }
+                at = (at * 2 + 1).min(ticks.len().saturating_sub(1));
+            }
         }
-        self.map.insert(k, (v, self.tick));
+        if let Some((old, _)) = self.map.insert(k, (v, self.tick)) {
+            self.used = self.used.saturating_sub(Self::size(&old));
+        }
+        self.used += add;
     }
 }
 
@@ -190,6 +254,8 @@ pub struct Stats {
     pub blocks_total: u32,
     pub blocks_scanned: u32,
     pub rules: Vec<String>,
+    /// Blocks whose scan did not finish and were dropped (DET-09).
+    pub detector_faults: Vec<&'static str>,
 }
 
 impl Stats {
@@ -282,8 +348,17 @@ pub fn process_blocks(
             entities: ents,
             grammar,
             hit,
+            fault,
         } = engine.scan(&b.text);
         has_grammar.push(grammar);
+        if let Some(f) = fault {
+            // DET-09: the block was not checked, so it does not go out; the request does
+            ctx.stats.detector_faults.push(f.as_str());
+            ctx.stats.rules.push("DET-09".into());
+            dropped[i] = true;
+            kept.push(vec![]);
+            continue;
+        }
         *ctx.stats.timings_ms.entry("detect").or_insert(0.0) +=
             t_scan.elapsed().as_secs_f64() * 1000.0;
         if !hit {

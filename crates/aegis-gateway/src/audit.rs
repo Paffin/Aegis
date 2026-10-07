@@ -1,4 +1,4 @@
-//! REQ: AUD-01, AUD-02, AUD-03, AUD-04, AUD-06, API-06, SEC-01 — audit without values.
+//! REQ: DET-09, AUD-01, AUD-02, AUD-03, AUD-04, AUD-06, API-06, SEC-01 — audit without values.
 //!
 //! Events carry types, hashes (HMAC on `K_audit`), counts and rule ids. A value or a
 //! pseudonym never appears here.
@@ -26,6 +26,9 @@ pub struct AuditEvent {
     pub entities: Vec<EntityEvent>,
     pub trifecta: TrifectaEvent,
     pub sinks: Vec<SinkEvent>,
+    /// DET-09: blocks that were not checked and were dropped (`timeout`, `error`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub detector_faults: Vec<&'static str>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -125,6 +128,7 @@ impl AuditEvent {
                     classes: s.classes.clone(),
                 })
                 .collect(),
+            detector_faults: ctx.stats.detector_faults.clone(),
         }
     }
 }
@@ -259,6 +263,7 @@ mod tests {
                 mode: "enforce",
             },
             sinks: vec![],
+            detector_faults: vec![],
         }
     }
 

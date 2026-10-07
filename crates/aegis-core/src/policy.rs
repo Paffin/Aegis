@@ -289,7 +289,7 @@ mod tests {
         }
     }
 
-    // REQ: RST-03 — full default table.
+    // REQ: RST-03, POL-06 — full default table, shipped as the default policy.
     #[test]
     fn default_table() {
         use Action::*;

@@ -87,7 +87,8 @@ pub fn apply(
         .compile()
         .map_err(|e| format!("invalid: {e}"))?;
     let keys = TenantKeys::from_secrets(&compiled.tenant, &secrets.k_t, &secrets.k_audit);
-    let engine = Engine::from_compiled(keys, compiled);
+    let (cache_bytes, budget) = st.engine.load().limits();
+    let engine = Engine::from_compiled(keys, compiled).with_limits(cache_bytes, budget);
     let mut vk: HashMap<String, VKey> = HashMap::new();
     for k in &payload.virtual_keys {
         let expires = match &k.expires_at {

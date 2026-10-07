@@ -1,4 +1,4 @@
-//! REQ: DET-01, DET-04, DET-05, DET-06, DET-07, DET-08 — L0 detectors.
+//! REQ: DET-01, DET-04, DET-05, DET-06, DET-07, DET-08, DET-09 — L0 detectors.
 //!
 //! Detectors only report positions and types; values stay in the scanned text.
 
@@ -6,10 +6,29 @@ use crate::types::{Entity, EntityType, Span};
 use aho_corasick::{AhoCorasick, MatchKind};
 use regex::Regex;
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 pub const DETECTOR_VERSION: u32 = 1;
 
 /// Interface shared by all detectors (T0-02).
+/// Why the scan of a block was aborted (DET-09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanFault {
+    /// The time budget for the block was exceeded.
+    Timeout,
+    /// A detector panicked.
+    Error,
+}
+
+impl ScanFault {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScanFault::Timeout => "timeout",
+            ScanFault::Error => "error",
+        }
+    }
+}
+
 pub trait Detector: Send + Sync {
     fn id(&self) -> &str;
     fn version(&self) -> u32 {
@@ -1465,6 +1484,27 @@ impl Pipeline {
         let mut entities = resolve_overlaps(cands);
         self.link_people(text, &mut entities);
         entities
+    }
+
+    /// DET-09: like [`scan`](Self::scan), but a detector that panics or leaves the time budget
+    /// behind aborts the scan of the block. The caller must not trust a partial result, so none
+    /// is returned.
+    pub fn scan_limited(&self, text: &str, budget: Duration) -> Result<Vec<Entity>, ScanFault> {
+        let start = Instant::now();
+        let mut cands = Vec::new();
+        for d in &self.detectors {
+            let ran =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.scan(text, &mut cands)));
+            if ran.is_err() {
+                return Err(ScanFault::Error);
+            }
+            if start.elapsed() > budget {
+                return Err(ScanFault::Timeout);
+            }
+        }
+        let mut entities = resolve_overlaps(cands);
+        self.link_people(text, &mut entities);
+        Ok(entities)
     }
 
     /// DET-07: an e-mail whose local part carries first and last name of a known person

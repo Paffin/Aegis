@@ -67,6 +67,12 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// DET-03: memory for the detection cache, in megabytes.
+    #[serde(default = "d_cache_mb")]
+    pub detect_cache_mb: usize,
+    /// DET-09: milliseconds one block may be scanned; a block that takes longer is dropped.
+    #[serde(default = "d_budget_ms")]
+    pub detect_budget_ms: u64,
     /// Requests in flight; more are refused with 503 and `Retry-After`.
     #[serde(default = "d_max_in_flight")]
     pub max_concurrent_requests: usize,
@@ -96,6 +102,12 @@ fn d_reload() -> u64 {
     15
 }
 
+fn d_cache_mb() -> usize {
+    1024
+}
+fn d_budget_ms() -> u64 {
+    2000
+}
 fn d_max_in_flight() -> usize {
     crate::server::DEFAULT_MAX_IN_FLIGHT
 }
@@ -289,7 +301,15 @@ impl ServerConfig {
             crate::bundle_loader::parse_trusted(&b.trusted_keys).map_err(ConfigError::Invalid)?;
         }
         let keys = TenantKeys::from_secrets(&self.tenant, k_t, k_audit);
-        let engine = Engine::new(keys, detect, dict);
+        if self.detect_cache_mb == 0 || self.detect_budget_ms == 0 {
+            return Err(ConfigError::Invalid(
+                "detect_cache_mb and detect_budget_ms must be at least 1".into(),
+            ));
+        }
+        let engine = Engine::new(keys, detect, dict).with_limits(
+            self.detect_cache_mb.saturating_mul(1 << 20),
+            std::time::Duration::from_millis(self.detect_budget_ms),
+        );
         let vk: HashMap<String, Principal> = self
             .virtual_keys
             .iter()

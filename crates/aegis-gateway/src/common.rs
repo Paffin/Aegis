@@ -474,6 +474,7 @@ mod tests {
         assert!(!other.as_str().unwrap().contains("Jd8"));
     }
 
+    // REQ: POL-04 — the rule id is in the refusal text (and in the audit event, `SinkEvent.rule`).
     #[test]
     fn denial_text_has_rule_and_request_id() {
         let d = Denied {
@@ -609,7 +610,15 @@ pub fn guard(
         if t.len() < GUARD_MIN_LEN || !seen.insert(t.as_str()) {
             continue;
         }
-        for e in engine.scan(t).entities {
+        let scanned = engine.scan(t);
+        if scanned.fault.is_some() {
+            // an identifier field that could not be checked is not passed on
+            return Err(crate::engine::IngressError::Blocked {
+                rule: "служебное поле, детектор не завершил проверку (DET-09)".into(),
+                ty: aegis_core::types::EntityType::Secret,
+            });
+        }
+        for e in scanned.entities {
             let (act, rule) = engine.ingress.decide(&e, route);
             if !matches!(act, Ingress::Allow) {
                 return Err(crate::engine::IngressError::Blocked {

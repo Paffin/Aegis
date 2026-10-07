@@ -599,6 +599,9 @@ fn complete(
     for (stage, ms) in &ctx.stats.timings_ms {
         m.observe_ms("aegis_stage_ms", &[("stage", stage)], *ms);
     }
+    for f in &ctx.stats.detector_faults {
+        m.inc("aegis_detector_faults_total", &[("kind", f)], 1);
+    }
     let scanned = ctx.stats.blocks_scanned as u64;
     m.inc(
         "aegis_detect_blocks_total",
@@ -1285,5 +1288,26 @@ impl IntoResponse for crate::anthropic::Reject {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(self.body()))
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    // REQ: IAM-05 — `X-Aegis-Client` wins over `User-Agent`; both are only a label.
+    #[test]
+    fn client_comes_from_the_header_or_the_user_agent() {
+        let mut h = HeaderMap::new();
+        assert_eq!(client_name(&h), "unknown");
+        h.insert(
+            header::USER_AGENT,
+            "claude-cli/2.1.0 (external)".parse().unwrap(),
+        );
+        assert_eq!(client_name(&h), "claude-cli");
+        h.insert("x-aegis-client", "codex".parse().unwrap());
+        assert_eq!(client_name(&h), "codex");
+        h.insert("x-aegis-client", "x".repeat(200).parse().unwrap());
+        assert_eq!(client_name(&h).len(), 40);
     }
 }

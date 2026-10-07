@@ -159,7 +159,7 @@ fn assert_no_real_values(bodies: &[Vec<u8>]) {
     }
 }
 
-// REQ: QA-06, QA-07, IAM-02, API-02 — non-streaming round trip.
+// REQ: QA-06, QA-07, IAM-02, API-02, RSP-08 — non-streaming round trip.
 #[tokio::test]
 async fn non_streaming_round_trip() {
     let respond: Responder = Arc::new(|req| {

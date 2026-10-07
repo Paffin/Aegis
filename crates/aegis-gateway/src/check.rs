@@ -24,6 +24,20 @@ impl Report {
     }
 }
 
+fn is_local(url: &str) -> bool {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    host == "localhost"
+        || host.starts_with("127.")
+        || host == "[::1]"
+        || host == "host.docker.internal"
+}
+
 /// A URL without credentials and query: safe to print.
 fn shown(url: &str) -> String {
     let no_query = url.split(['?', '#']).next().unwrap_or(url);
@@ -91,6 +105,12 @@ pub async fn run(path: &str) -> bool {
                 ("Gemini", &st.gemini),
             ] {
                 if let Some(u) = up {
+                    if u.base_url.starts_with("http://") && !is_local(&u.base_url) {
+                        r.warn(format_args!(
+                            "провайдер {name}: адрес {} без TLS, ключ провайдера пойдёт открытым текстом",
+                            shown(&u.base_url)
+                        ));
+                    }
                     r.ok(format_args!(
                         "провайдер {name}: {}, ключ {}",
                         shown(&u.base_url),

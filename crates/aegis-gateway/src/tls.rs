@@ -112,11 +112,13 @@ pub fn reloading(f: TlsFiles, every: Duration) -> Result<Arc<ArcSwap<ServerConfi
     Ok(cur)
 }
 
-/// Serve `router` over TLS until `stop` resolves, then let open connections finish.
+/// Serve `router` until `stop` resolves, then let open connections finish. With `tls` the
+/// connections are TLS; without it they are plain. Either way a client has 30 seconds to send its
+/// request headers, so a connection that says nothing does not hold a place for ever.
 pub async fn serve(
     listener: tokio::net::TcpListener,
     router: Router,
-    tls: Arc<ArcSwap<ServerConfig>>,
+    tls: Option<Arc<ArcSwap<ServerConfig>>>,
     stop: impl std::future::Future<Output = ()>,
 ) {
     let graceful = GracefulShutdown::new();
@@ -129,21 +131,34 @@ pub async fn serve(
             },
             _ = &mut stop => break,
         };
-        let acceptor = TlsAcceptor::from(tls.load_full());
         let svc = TowerToHyperService::new(router.clone());
         let watcher = graceful.watcher();
+        let acceptor = tls.as_ref().map(|t| TlsAcceptor::from(t.load_full()));
         tokio::spawn(async move {
-            // a client that does not finish the handshake does not hold a slot
-            let Ok(Ok(stream)) =
-                tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await
-            else {
-                return;
+            let builder = || {
+                let mut b = hyper::server::conn::http1::Builder::new();
+                b.timer(TokioTimer::new())
+                    .header_read_timeout(Duration::from_secs(30));
+                b
             };
-            let conn = hyper::server::conn::http1::Builder::new()
-                .timer(TokioTimer::new())
-                .header_read_timeout(Duration::from_secs(30))
-                .serve_connection(TokioIo::new(stream), svc);
-            let _ = watcher.watch(conn).await;
+            match acceptor {
+                Some(a) => {
+                    // a client that does not finish the handshake does not hold a place either
+                    let Ok(Ok(stream)) =
+                        tokio::time::timeout(Duration::from_secs(10), a.accept(tcp)).await
+                    else {
+                        return;
+                    };
+                    let _ = watcher
+                        .watch(builder().serve_connection(TokioIo::new(stream), svc))
+                        .await;
+                }
+                None => {
+                    let _ = watcher
+                        .watch(builder().serve_connection(TokioIo::new(tcp), svc))
+                        .await;
+                }
+            }
         });
     }
     graceful.shutdown().await;

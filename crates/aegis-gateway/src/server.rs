@@ -39,6 +39,9 @@ pub const DEFAULT_MAX_IN_FLIGHT: usize = 1000;
 /// stream is fine as long as it keeps moving.
 pub fn client_with(connect: Duration, read: Duration) -> reqwest::Client {
     reqwest::Client::builder()
+        // a provider that answers with a redirect is not followed: the key and the body would go
+        // to whoever the redirect names
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect)
         .read_timeout(read)
         .build()
@@ -56,6 +59,7 @@ pub fn client_with_ca(
         return Err("no certificate in the file".into());
     }
     let mut b = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect)
         .read_timeout(read)
         .tls_built_in_root_certs(false);
@@ -268,6 +272,10 @@ pub struct AppState {
     /// Requests in flight (a request holds its permit until its response body is over): beyond
     /// the limit a request is refused at once instead of piling up bodies in memory.
     pub limiter: Arc<tokio::sync::Semaphore>,
+    /// Creation time of the newest bundle applied (or cached): older ones are refused.
+    pub bundle_floor: std::sync::atomic::AtomicI64,
+    /// Longest silence in a request body (the whole body gets ten times as long).
+    pub body_idle: Duration,
     /// RTE-01: static routes, tried in order before the default providers.
     pub routes: Vec<Route>,
     /// RTE-02: client-visible model name → the provider's name.
@@ -309,6 +317,8 @@ impl AppState {
             bundle_required: false,
             http: client_with(Duration::from_secs(10), Duration::from_secs(300)),
             limiter: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
+            body_idle: BODY_IDLE,
+            bundle_floor: std::sync::atomic::AtomicI64::new(0),
             routes: vec![],
             model_aliases: Default::default(),
             audit: Audit::disabled(),
@@ -542,18 +552,34 @@ async fn limit(
     next: axum::middleware::Next,
 ) -> Response {
     let path = req.uri().path().to_string();
-    let Ok(permit) = st.limiter.clone().try_acquire_owned() else {
-        st.metrics
-            .inc("aegis_requests_total", &[("decision", "overloaded")], 1);
-        let proto = if path.starts_with("/v1beta/") || path.contains(":generateContent") {
+    let family = |path: &str| {
+        if path.starts_with("/v1beta/") || path.contains(":generateContent") {
             Protocol::Gemini
         } else if path.starts_with("/v1/messages") {
             Protocol::Anthropic
         } else {
             Protocol::OpenAiChat
-        };
+        }
+    };
+    // A path that climbs out of the API (`..`, an encoded dot or slash, a backslash) would be
+    // normalized by the HTTP client and reach other endpoints of the provider with Aegis's key.
+    if !path_is_clean(&path) {
+        return err_response_for(
+            family(&path),
+            400,
+            "invalid_request_error",
+            "Aegis: недопустимый путь",
+        );
+    }
+    // Nobody who cannot show a key or a token holds a place or makes Aegis read a body.
+    if let Err(m) = authenticate_q(req.headers(), &st, req.uri().query().unwrap_or("")) {
+        return err_response_for(family(&path), 401, "authentication_error", &m);
+    }
+    let Ok(permit) = st.limiter.clone().try_acquire_owned() else {
+        st.metrics
+            .inc("aegis_requests_total", &[("decision", "overloaded")], 1);
         let mut r = err_response_for(
-            proto,
+            family(&path),
             503,
             "overloaded_error",
             "Aegis: слишком много одновременных запросов, повторите позже",
@@ -562,6 +588,12 @@ async fn limit(
             .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
         return r;
     };
+    // A body that stops arriving, or arrives drop by drop, is cut off.
+    let (rparts, rbody) = req.into_parts();
+    let req = axum::extract::Request::from_parts(
+        rparts,
+        Body::from_stream(time_limited(rbody.into_data_stream(), st.body_idle)),
+    );
     let resp = next.run(req).await;
     let (parts, body) = resp.into_parts();
     let held = body.into_data_stream().map(move |chunk| {
@@ -569,6 +601,44 @@ async fn limit(
         chunk
     });
     Response::from_parts(parts, Body::from_stream(held))
+}
+
+/// Longest silence in a request body, and longest the whole body may take to arrive.
+pub const BODY_IDLE: Duration = Duration::from_secs(30);
+
+fn time_limited(
+    body: axum::body::BodyDataStream,
+    idle: Duration,
+) -> impl futures_util::Stream<Item = Result<Bytes, std::io::Error>> {
+    let deadline = tokio::time::Instant::now() + idle * 10;
+    futures_util::stream::unfold(Some(body), move |state| async move {
+        let mut body = state?;
+        let wait = idle.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        match tokio::time::timeout(wait, body.next()).await {
+            Ok(Some(Ok(chunk))) => Some((Ok(chunk), Some(body))),
+            Ok(Some(Err(e))) => Some((Err(std::io::Error::other(e)), None)),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "request body too slow",
+                )),
+                None,
+            )),
+        }
+    })
+}
+
+/// The path has nothing in it that an HTTP client could resolve to somewhere else.
+pub fn path_is_clean(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    !(path.split('/').any(|seg| seg == "." || seg == "..")
+        || lower.contains("%2e")
+        || lower.contains("%2f")
+        || lower.contains("%5c")
+        || lower.contains("%00")
+        || path.contains('\\')
+        || path.chars().any(|c| c.is_control()))
 }
 
 /// OBS-04, OBS-01: served on a separate port (SEC-06).
@@ -679,6 +749,22 @@ struct ReqInfo {
     model: String,
     request_bytes: usize,
     route: String,
+}
+
+/// A name from the request that goes into the audit log, metrics and traces: only plain names,
+/// and nothing the detectors recognize as a value. The request's own `model` or `User-Agent` is
+/// text the client chose, so a secret put there must not be copied into the log.
+fn safe_label(engine: &Engine, s: &str) -> String {
+    let plain = !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/' | '@' | '+')
+        });
+    if plain && engine.scan(s).entities.is_empty() {
+        s.to_string()
+    } else {
+        "other".to_string()
+    }
 }
 
 fn client_name(h: &HeaderMap) -> String {
@@ -903,6 +989,24 @@ async fn gemini_model(
             )
         }
     };
+    // the model is a path segment that goes to the provider: names only, nothing that climbs
+    if model.is_empty()
+        || model.len() > 100
+        || !model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        || model == "."
+        || model == ".."
+        || !(path.starts_with("/v1beta/models/") || path.starts_with("/v1/models/"))
+        || path.matches('/').count() != 3
+    {
+        return err_response_for(
+            Protocol::Gemini,
+            400,
+            "invalid_request_error",
+            "Aegis: недопустимое имя модели",
+        );
+    }
     let target = GemTarget {
         path,
         query,
@@ -1168,8 +1272,8 @@ async fn proxy(
             .and_then(|v| v.to_str().ok())
             .and_then(crate::trace::parse_traceparent),
         principal: principal.id.clone(),
-        client: client_name(&headers),
-        model,
+        client: safe_label(&engine, &client_name(&headers)),
+        model: safe_label(&engine, &model),
         request_bytes: body.len(),
         route: route_name.clone(),
     };

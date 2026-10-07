@@ -58,7 +58,7 @@ async fn serve(files: TlsFiles, every: Duration) -> String {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
     let router = Router::new().route("/ping", get(|| async { "pong" }));
-    tokio::spawn(tls::serve(l, router, cfg, std::future::pending()));
+    tokio::spawn(tls::serve(l, router, Some(cfg), std::future::pending()));
     format!("127.0.0.1:{}", addr.port())
 }
 

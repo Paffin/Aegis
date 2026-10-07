@@ -78,6 +78,13 @@ pub fn apply(
     if payload.is_expired(crate::server::now_unix()) {
         return Err("expired".into());
     }
+    // An older bundle that is still signed and not expired would bring back what a newer one
+    // took away (a revoked key, a stricter rule). Time only moves forward.
+    let created =
+        bundle::parse_utc(&payload.created_at).ok_or_else(|| "invalid: created_at".to_string())?;
+    if created < st.bundle_floor.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("rollback: пакет старше уже применённого".into());
+    }
     payload
         .policy
         .check_examples()
@@ -123,6 +130,8 @@ pub fn apply(
             key_id: env.key_id,
         });
     }
+    st.bundle_floor
+        .fetch_max(created, std::sync::atomic::Ordering::Relaxed);
     st.metrics.inc("aegis_bundle_applied_total", &[], 1);
     Ok(payload.version)
 }
@@ -136,14 +145,14 @@ pub async fn fetch(http: &reqwest::Client, src: &Source) -> Result<Vec<u8>, Stri
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await
-                .map_err(|e| format!("fetch: {e}"))?;
+                .map_err(|e| format!("fetch: {}", e.without_url()))?;
             if !r.status().is_success() {
                 return Err(format!("fetch: HTTP {}", r.status()));
             }
             r.bytes()
                 .await
                 .map(|b| b.to_vec())
-                .map_err(|e| format!("fetch: {e}"))
+                .map_err(|e| format!("fetch: {}", e.without_url()))
         }
     }
 }
@@ -172,6 +181,18 @@ impl Loader {
         st: &AppState,
         last: &mut Option<[u8; 32]>,
     ) -> Result<Option<String>, String> {
+        // After a restart the floor comes from the last bundle this node applied, so an old
+        // bundle offered by a compromised source is refused here too.
+        if st.bundle_floor.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            if let Some(raw) = self.cache.as_ref().and_then(|c| std::fs::read(c).ok()) {
+                if let Ok(p) = bundle::verify(&raw, &self.trusted) {
+                    if let Some(t) = bundle::parse_utc(&p.created_at) {
+                        st.bundle_floor
+                            .fetch_max(t, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        }
         let fetched = fetch(&st.http, &self.source).await;
         match fetched {
             Ok(raw) => {
@@ -282,9 +303,19 @@ mod tests {
     }
 
     fn bundle(sk: &SigningKey, version: &str, expires: &str, policy: &str) -> Vec<u8> {
+        bundle_at(sk, version, "2026-10-07T00:00:00Z", expires, policy)
+    }
+
+    fn bundle_at(
+        sk: &SigningKey,
+        version: &str,
+        created: &str,
+        expires: &str,
+        policy: &str,
+    ) -> Vec<u8> {
         let p = Payload {
             version: version.into(),
-            created_at: "2026-10-07T00:00:00Z".into(),
+            created_at: created.into(),
             expires_at: expires.into(),
             policy: PolicyDoc::from_yaml(policy).unwrap(),
             virtual_keys: vec![VirtualKeyDoc {
@@ -302,6 +333,26 @@ mod tests {
 
     fn far() -> &'static str {
         "2099-01-01T00:00:00Z"
+    }
+
+    // REQ: CFG-04, IAM-03 — an older signed bundle cannot be put back over a newer one (it would
+    // bring back a revoked key); the same bundle again, and newer ones, are fine.
+    #[test]
+    fn an_older_bundle_is_refused() {
+        let sk = SigningKey::from_bytes(&[5; 32]);
+        let st = state();
+        let t = [sk.verifying_key()];
+        let old = bundle_at(&sk, "v1", "2026-10-01T00:00:00Z", far(), P1);
+        let new = bundle_at(&sk, "v2", "2026-10-05T00:00:00Z", far(), P2);
+        apply(&st, &t, &secrets(), &old).unwrap();
+        apply(&st, &t, &secrets(), &new).unwrap();
+        let e = apply(&st, &t, &secrets(), &old).unwrap_err();
+        assert!(e.starts_with("rollback"), "{e}");
+        assert_eq!(st.bundle_version(), "v2");
+        assert!(
+            apply(&st, &t, &secrets(), &new).is_ok(),
+            "the same bundle again is not a rollback"
+        );
     }
 
     // REQ: NFR-09 — before any bundle the gateway is not ready and refuses traffic.

@@ -150,12 +150,10 @@ async fn main() {
             let tls = aegis_gateway::tls::reloading(t.clone(), Duration::from_secs(30))
                 .unwrap_or_else(|e| fail(format!("tls: {e}")));
             tracing::info!(mtls = t.client_ca_file.is_some(), "TLS on the main port");
-            aegis_gateway::tls::serve(main_l, app(state), tls, stop).await;
+            aegis_gateway::tls::serve(main_l, app(state), Some(tls), stop).await;
         }
         None => {
-            let _ = axum::serve(main_l, app(state))
-                .with_graceful_shutdown(stop)
-                .await;
+            aegis_gateway::tls::serve(main_l, app(state), None, stop).await;
         }
     }
 }

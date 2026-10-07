@@ -1,0 +1,33 @@
+[package]
+name = "aegis-mcp"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+
+[lib]
+name = "aegis_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aegis-mcp"
+path = "src/main.rs"
+
+[dependencies]
+aegis-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+regex.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "io-std", "fs", "rt-multi-thread", "macros"] }
+axum.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

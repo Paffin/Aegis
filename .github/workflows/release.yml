@@ -41,11 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --locked -p aegis-gateway -p aegis-cli
+      - run: cargo build --release --locked -p aegis-gateway -p aegis-cli -p aegis-mcp
       - name: Package
         run: |
           mkdir dist
-          cp target/release/aegis-gateway target/release/aegis dist/
+          cp target/release/aegis-gateway target/release/aegis target/release/aegis-mcp dist/
           cp deploy/systemd/aegis-gateway.service dist/
           (cd dist && sha256sum * > SHA256SUMS)
       - uses: softprops/action-gh-release@v2

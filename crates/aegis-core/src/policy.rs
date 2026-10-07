@@ -194,7 +194,10 @@ pub enum TrifectaMode {
 pub struct TrifectaConfig {
     pub mode: TrifectaMode,
     pub private_classes: Vec<Class>,
+    /// Tools whose results are content the company does not control (`*` is a wildcard).
     pub untrusted_tools: Vec<String>,
+    /// Tools whose calls leave the perimeter: restored like a network sink (MCP-05).
+    pub egress_tools: Vec<String>,
     pub untrusted_paths: Vec<String>,
     pub allow_destinations: Vec<String>,
     pub block_exec: bool,
@@ -206,6 +209,7 @@ impl Default for TrifectaConfig {
             mode: TrifectaMode::Enforce,
             private_classes: vec![Class::Secret, Class::Pii, Class::Infra],
             untrusted_tools: vec!["WebFetch".into(), "WebSearch".into()],
+            egress_tools: vec![],
             untrusted_paths: ["node_modules/", "vendor/", "third_party/", ".git/modules/"]
                 .iter()
                 .map(|s| s.to_string())
@@ -233,7 +237,15 @@ impl TrifectaConfig {
     }
 
     pub fn tool_is_untrusted(&self, tool: &str) -> bool {
-        self.untrusted_tools.iter().any(|t| t == tool)
+        self.untrusted_tools.iter().any(|t| glob_match(t, tool))
+    }
+
+    /// MCP-05: a tool declared as leaving the perimeter is a network sink whatever its name says.
+    pub fn sink_override(&self, tool: &str) -> Option<Sink> {
+        self.egress_tools
+            .iter()
+            .any(|t| glob_match(t, tool))
+            .then_some(Sink::Network)
     }
 
     pub fn state(&self, classes: &HashSet<Class>, untrusted: bool) -> TrifectaState {
@@ -624,6 +636,26 @@ mod ingress_tests {
             "route-bound rule does not leak to other routes"
         );
     }
+}
+
+/// `*` matches any run of characters (also none); everything else is literal.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return pattern == text;
+    }
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !text.starts_with(first) || text.len() < first.len() + last.len() || !text.ends_with(last) {
+        return false;
+    }
+    let mut rest = &text[first.len()..text.len() - last.len()];
+    for mid in &parts[1..parts.len() - 1] {
+        match rest.find(mid) {
+            Some(i) => rest = &rest[i + mid.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 
 /// POL-05: what the policy does with whole kinds of content (`defaults.attachments`,

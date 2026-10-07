@@ -32,7 +32,7 @@ for f in glob.glob("crates/**/*.rs", recursive=True) + glob.glob("crates/**/test
         for r in re.findall(r"[A-Z]{2,4}-\d+", text):
             covered.setdefault(r, set()).add(f"{f}:{i}")
 
-for stage in ("Э0", "Э1"):
+for stage in ("Э0", "Э1", "Э2"):
     ids = sorted(r for r, s in reqs.items() if s == stage)
     have = [r for r in ids if r in covered]
     miss = [r for r in ids if r not in covered]

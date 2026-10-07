@@ -153,25 +153,7 @@ pub struct Route {
     pub upstream: Upstream,
 }
 
-/// `*` matches any run of characters (also none); everything else is literal.
-pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == text;
-    }
-    let (first, last) = (parts[0], parts[parts.len() - 1]);
-    if !text.starts_with(first) || text.len() < first.len() + last.len() || !text.ends_with(last) {
-        return false;
-    }
-    let mut rest = &text[first.len()..text.len() - last.len()];
-    for mid in &parts[1..parts.len() - 1] {
-        match rest.find(mid) {
-            Some(i) => rest = &rest[i + mid.len()..],
-            None => return false,
-        }
-    }
-    true
-}
+pub use aegis_core::policy::glob_match;
 
 fn family_of(p: Protocol) -> Family {
     match p {

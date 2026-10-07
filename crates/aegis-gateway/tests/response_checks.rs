@@ -139,3 +139,38 @@ fn tenant_patterns_and_off_switch() {
     let (r, _) = call(&e, "Bash", json!({"command": "rm -rf /"}));
     assert!(r.is_ok());
 }
+
+// REQ: MCP-05 — a tool declared as leaving the perimeter is a network sink, so the
+// three-condition rule stops it; a tool of a closed MCP server is not stopped by it.
+#[test]
+fn egress_mcp_tools_are_network_sinks() {
+    use aegis_core::policy::TrifectaState;
+    let e = engine(|e| {
+        e.trifecta.egress_tools = vec!["mcp__slack__*".into()];
+        e.trifecta.untrusted_tools.push("mcp__tracker__*".into());
+    });
+    assert!(e.trifecta.tool_is_untrusted("mcp__tracker__get_issue"));
+    assert!(!e.trifecta.tool_is_untrusted("mcp__docs__search"));
+    let armed = |ctx: &mut RequestCtx| {
+        ctx.trifecta = TrifectaState {
+            private: true,
+            untrusted: true,
+        }
+    };
+    let input = json!({"channel": "dev", "text": "build is green"});
+
+    let mut ctx = RequestCtx::empty("r");
+    armed(&mut ctx);
+    let mut i = input.clone();
+    let r = restore_tool_call(&e, &mut ctx, "mcp__slack__post_message", &mut i);
+    assert!(
+        r.is_err(),
+        "private data and untrusted content: an egress tool is stopped"
+    );
+    assert_eq!(r.unwrap_err().sink.as_str(), "network");
+
+    let mut ctx = RequestCtx::empty("r");
+    armed(&mut ctx);
+    let mut i = input;
+    assert!(restore_tool_call(&e, &mut ctx, "mcp__docs__search", &mut i).is_ok());
+}

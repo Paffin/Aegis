@@ -208,7 +208,11 @@ pub fn restore_tool_call(
     let default_sink = if shell {
         cmd_sink.unwrap_or(Sink::ShellNetwork)
     } else {
-        Sink::from_tool(name).unwrap_or(Sink::Unknown)
+        engine
+            .trifecta
+            .sink_override(name)
+            .or_else(|| Sink::from_tool(name))
+            .unwrap_or(Sink::Unknown)
     };
 
     // RSP-10, RSP-06: the model's own arguments, before anything is restored.

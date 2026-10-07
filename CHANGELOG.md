@@ -22,6 +22,7 @@
 - `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
 
+- **Этап 2, начало:** `aegis-mcp` — фильтр между агентом и серверами MCP (stdio и Streamable HTTP): белый список инструментов, проверка аргументов, SQL только чтение, удаление полей из результатов, фрагмент политики для меток доверия и выхода наружу (`MCP-01`…`MCP-05`); в политике gateway `trifecta.egress_tools` и шаблоны в `untrusted_tools`. Документ: [docs/MCP.md](docs/MCP.md).
 - Политика решает судьбу вложений и эмбеддингов целиком (`defaults.attachments`, `defaults.embeddings`: `block_request`) (`POL-05`).
 - `scripts/docs-check.sh`: документы и конфигурации, которых требует спецификация (`CMP-*`, `EGR-*`, `NFR-05`, `NFR-08`, `QA-09`), проверяются в CI; в документах появились ротация аудита, настройки у провайдера, масштабирование и работа без интернета.
 - Маршруты по имени модели и группе ключа (`routes`): свой провайдер, свои учётные данные и своё имя для правил политики (`RTE-01`).

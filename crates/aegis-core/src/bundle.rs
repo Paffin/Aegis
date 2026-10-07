@@ -145,6 +145,10 @@ pub struct TrifectaDoc {
     pub private_classes: Vec<String>,
     #[serde(default = "d_untrusted_tools")]
     pub untrusted_tools: Vec<String>,
+    /// Tools whose calls leave the perimeter (an MCP server that posts to a chat or a public
+    /// repository): their arguments are restored like those of a network call.
+    #[serde(default)]
+    pub egress_tools: Vec<String>,
     #[serde(default = "d_untrusted_paths")]
     pub untrusted_paths: Vec<String>,
     #[serde(default)]
@@ -181,6 +185,7 @@ impl Default for TrifectaDoc {
             mode: d_enforce(),
             private_classes: d_private(),
             untrusted_tools: d_untrusted_tools(),
+            egress_tools: vec![],
             untrusted_paths: d_untrusted_paths(),
             allow_destinations: vec![],
             block_exec: false,
@@ -422,6 +427,7 @@ impl PolicyDoc {
             mode: tri_mode,
             private_classes,
             untrusted_tools: self.trifecta.untrusted_tools.clone(),
+            egress_tools: self.trifecta.egress_tools.clone(),
             untrusted_paths: self.trifecta.untrusted_paths.clone(),
             allow_destinations: self.trifecta.allow_destinations.clone(),
             block_exec: self.trifecta.block_exec,
@@ -924,6 +930,22 @@ rules:
             (Act::Warn, Act::Deny, Act::Deny)
         );
         assert_eq!(r.extra.len(), 1);
+    }
+
+    // REQ: MCP-05 — the policy names the MCP tools that are untrusted content or leave the perimeter.
+    #[test]
+    fn mcp_labels_reach_the_trifecta() {
+        let y = "version: 1\ntrifecta:\n  untrusted_tools: [WebFetch, 'mcp__tracker__*']\n  egress_tools: ['mcp__slack__*']\n";
+        let c = PolicyDoc::from_yaml(y).unwrap().compile().unwrap();
+        assert!(
+            c.trifecta.tool_is_untrusted("mcp__tracker__get_issue")
+                && c.trifecta.tool_is_untrusted("WebFetch")
+        );
+        assert_eq!(
+            c.trifecta.sink_override("mcp__slack__post"),
+            Some(crate::policy::Sink::Network)
+        );
+        assert_eq!(c.trifecta.sink_override("mcp__docs__search"), None);
     }
 
     // REQ: POL-05 — attachments and embeddings: the milder action by default, refusal on request.

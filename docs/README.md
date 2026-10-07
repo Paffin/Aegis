@@ -6,6 +6,7 @@
 |---|---|---|
 | [README](../README.md) | все | Что это, демо за две минуты, подключение |
 | [CLIENTS](CLIENTS.md) | разработчики | Как подключить Claude Code, Codex, Gemini CLI, Cline, Continue, Qwen Code и другие клиенты |
+| [MCP](MCP.md) | администраторы | `aegis-mcp`: белый список инструментов MCP, проверка аргументов, SQL только чтение, удаление полей, метки доверия |
 | [PROVIDERS](PROVIDERS.md) | администраторы | Anthropic, OpenAI, Azure, Gemini, DeepSeek, Qwen, Kimi, GLM, локальные модели: адреса и настройки |
 | [ADMIN](ADMIN.md) | администраторы | Запуск, конфигурация, политика, бандлы, ключи, метрики, аудит |
 

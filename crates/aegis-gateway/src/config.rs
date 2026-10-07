@@ -67,6 +67,9 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// IAM-04: accept JWTs of an OpenID Connect provider next to virtual keys.
+    #[serde(default)]
+    pub oidc: Option<crate::oidc::OidcConfig>,
     /// RTE-01: static routes by model name and group; see [`RouteConfig`].
     #[serde(default)]
     pub routes: Vec<RouteConfig>,

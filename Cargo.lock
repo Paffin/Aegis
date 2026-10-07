@@ -67,6 +67,7 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "ring",
  "rustix",
  "rustls",
  "serde",

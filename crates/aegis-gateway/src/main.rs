@@ -53,6 +53,16 @@ async fn main() {
         .build(&k_t, &k_audit, ProviderKeys::from_env())
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
+    if let Some(o) = &cfg.oidc {
+        let http =
+            aegis_gateway::server::client_with(Duration::from_secs(5), Duration::from_secs(10));
+        state.oidc = Some(
+            aegis_gateway::oidc::Verifier::start(o.clone(), http)
+                .await
+                .unwrap_or_else(|e| fail(e)),
+        );
+        tracing::info!(issuer = %o.issuer, "OIDC tokens accepted");
+    }
     if let Some(ep) = &cfg.otlp_endpoint {
         let headers = std::env::var("AEGIS_OTLP_HEADERS")
             .unwrap_or_default()

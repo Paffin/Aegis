@@ -231,6 +231,16 @@ pub async fn run(path: &str) -> bool {
         }
         None => {}
     }
+    if let Some(o) = &cfg.oidc {
+        let http = crate::server::client_with(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
+        );
+        match crate::oidc::Verifier::start(o.clone(), http).await {
+            Ok(_) => r.ok(format_args!("OIDC: ключи издателя {} загружены", o.issuer)),
+            Err(e) => r.fail(e),
+        }
+    }
     if let Some(ep) = &cfg.otlp_endpoint {
         match reqwest::Url::parse(ep) {
             Ok(u) if matches!(u.scheme(), "http" | "https") => {

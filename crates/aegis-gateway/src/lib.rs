@@ -12,6 +12,7 @@ pub mod gemini;
 pub mod harden;
 pub mod json;
 pub mod metrics;
+pub mod oidc;
 pub mod openai_chat;
 pub mod openai_completions;
 pub mod openai_embeddings;

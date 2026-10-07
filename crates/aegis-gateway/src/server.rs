@@ -274,6 +274,8 @@ pub struct AppState {
     pub model_aliases: std::collections::BTreeMap<String, String>,
     pub audit: Audit,
     pub metrics: Arc<Metrics>,
+    /// IAM-04: tokens of an identity provider are accepted next to virtual keys.
+    pub oidc: Option<Arc<crate::oidc::Verifier>>,
     /// OBS-03: traces by stage; `None` without `otlp_endpoint`.
     pub tracer: Option<crate::trace::Tracer>,
     counter: AtomicU64,
@@ -311,6 +313,7 @@ impl AppState {
             model_aliases: Default::default(),
             audit: Audit::disabled(),
             metrics: Arc::new(Metrics::default()),
+            oidc: None,
             tracer: None,
             counter: AtomicU64::new(0),
         }
@@ -612,17 +615,26 @@ async fn not_found(uri: Uri) -> Response {
     )
 }
 
-fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, Box<Response>> {
+fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, String> {
     authenticate_q(h, st, "")
 }
 
-fn authenticate_q(h: &HeaderMap, st: &AppState, query: &str) -> Result<Principal, Box<Response>> {
-    let deny = |m: &str| Box::new(err_response(401, "authentication_error", m));
-    let key = client_key(h, query).ok_or_else(|| deny("Aegis: требуется виртуальный ключ"))?;
+/// The principal behind the key or token, or the message for the 401.
+fn authenticate_q(h: &HeaderMap, st: &AppState, query: &str) -> Result<Principal, String> {
+    let key = client_key(h, query).ok_or("Aegis: требуется виртуальный ключ")?;
+    if let Some(v) = st
+        .oidc
+        .as_ref()
+        .filter(|_| crate::oidc::looks_like_jwt(&key))
+    {
+        return v
+            .verify(&key, now_unix())
+            .map_err(|e| format!("Aegis: {}", e.message()));
+    }
     let keys = st.keys.load();
     match keys.get(&hash_key(&key)) {
         Some(k) if k.expires.is_none_or(|e| e > now_unix()) => Ok(k.principal.clone()),
-        _ => Err(deny("Aegis: неверный или отозванный ключ")),
+        _ => Err("Aegis: неверный или отозванный ключ".into()),
     }
 }
 
@@ -1011,8 +1023,8 @@ async fn passthrough_get(st: &AppState, headers: &HeaderMap, path: &str, query: 
             &format!("Aegis: {why}; запросы остановлены (fail-closed)"),
         );
     }
-    if let Err(r) = authenticate_q(headers, st, query) {
-        return *r;
+    if let Err(m) = authenticate_q(headers, st, query) {
+        return err_response_for(proto, 401, "authentication_error", &m);
     }
     let Some(up) = upstream_for(st, proto) else {
         return err_response(404, "not_found_error", "Aegis: провайдер не настроен");
@@ -1099,17 +1111,7 @@ async fn proxy(
     let raw_query = gem.as_ref().map_or(query.as_str(), |g| g.query.as_str());
     let principal = match authenticate_q(&headers, &st, raw_query) {
         Ok(p) => p,
-        Err(r) => {
-            return if proto == Protocol::Anthropic {
-                *r
-            } else {
-                fail(
-                    401,
-                    "authentication_error",
-                    "Aegis: требуется действительный виртуальный ключ",
-                )
-            }
-        }
+        Err(m) => return fail(401, "authentication_error", &m),
     };
     let rid = st.request_id();
     // AUD-04: with `audit.required` traffic stops when the audit queue overflowed (fail-closed).
@@ -1426,7 +1428,7 @@ async fn count_tokens(
     let engine = st.engine.load_full();
     let principal = match authenticate(&headers, &st) {
         Ok(p) => p,
-        Err(r) => return *r,
+        Err(m) => return err_response(401, "authentication_error", &m),
     };
     let Some(up) = st.anthropic.as_ref() else {
         return err_response(404, "not_found_error", "Aegis: провайдер не настроен");

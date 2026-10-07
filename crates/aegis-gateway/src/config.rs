@@ -96,6 +96,10 @@ pub struct ServerConfig {
     /// Requests in flight; more are refused with 503 and `Retry-After`.
     #[serde(default = "d_max_in_flight")]
     pub max_concurrent_requests: usize,
+    /// Open connections from one client address; 0 (default) = no limit. Behind a balancer limit
+    /// there instead: every client has the balancer's address.
+    #[serde(default)]
+    pub max_connections_per_ip: usize,
     /// Seconds to connect to a provider.
     #[serde(default = "d_connect")]
     pub upstream_connect_timeout_secs: u64,

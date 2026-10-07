@@ -281,3 +281,69 @@ async fn a_value_in_the_gemini_model_name_is_not_sent_to_the_provider() {
     assert_eq!(status_of(&r), "400", "{r}");
     assert!(seen.lock().unwrap().is_empty());
 }
+
+// REQ: RTE-01 — counting tokens goes to the provider the route names, not always to the default.
+#[tokio::test]
+async fn count_tokens_follows_the_route() {
+    let (default_up, default_seen) = recorder().await;
+    let (team_up, team_seen) = recorder().await;
+    let gw = gateway_with(default_up, move |st| {
+        st.routes = vec![aegis_gateway::server::Route {
+            name: "team".into(),
+            family: aegis_gateway::server::Family::Anthropic,
+            models: vec!["team-*".into()],
+            groups: vec![],
+            upstream: Upstream::anthropic(team_up, "TEAM-KEY"),
+        }];
+    })
+    .await;
+    for (model, _) in [("team-large", 0), ("other", 1)] {
+        let body =
+            json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}).to_string();
+        let req = format!("POST /v1/messages/count_tokens HTTP/1.1\r\nHost: x\r\nx-api-key: vk\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        assert_eq!(
+            status_of(&raw(&gw, &req, Duration::from_secs(3)).await),
+            "200"
+        );
+    }
+    assert_eq!(team_seen.lock().unwrap().len(), 1);
+    assert!(team_seen.lock().unwrap()[0].contains("TEAM-KEY"));
+    assert_eq!(default_seen.lock().unwrap().len(), 1);
+    assert!(default_seen.lock().unwrap()[0].contains("PROVIDER-SECRET"));
+}
+
+// SEC-10 — one address cannot hold more connections than allowed, and a closed one gives its place back.
+#[tokio::test]
+async fn connections_per_address_are_limited() {
+    let router = Router::new().route("/", any(|| async { "ok" }));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(aegis_gateway::tls::serve_limited(
+        l,
+        router,
+        None,
+        2,
+        std::future::pending(),
+    ));
+    let a = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let b = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // the third is accepted by the kernel and closed by the gateway
+    let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(2), c.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap_or(0);
+    assert_eq!(n, 0, "closed without an answer");
+    // a place comes back when a connection ends
+    drop(a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let r = raw(
+        &addr.to_string(),
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(status_of(&r), "200", "{r}");
+    drop(b);
+}

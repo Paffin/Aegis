@@ -121,20 +121,87 @@ pub async fn serve(
     tls: Option<Arc<ArcSwap<ServerConfig>>>,
     stop: impl std::future::Future<Output = ()>,
 ) {
+    serve_limited(listener, router, tls, 0, stop).await
+}
+
+/// Open connections per client address; a guard returns the place when the connection ends.
+struct PerIp {
+    max: usize,
+    open: std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
+}
+
+struct Place {
+    gate: Arc<PerIp>,
+    ip: std::net::IpAddr,
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.gate.open.lock() {
+            if let Some(n) = m.get_mut(&self.ip) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&self.ip);
+                }
+            }
+        }
+    }
+}
+
+impl PerIp {
+    fn take(self: &Arc<Self>, ip: std::net::IpAddr) -> Option<Place> {
+        if self.max == 0 {
+            return Some(Place {
+                gate: self.clone(),
+                ip: std::net::IpAddr::from([0, 0, 0, 0]),
+            });
+        }
+        let mut m = self.open.lock().ok()?;
+        let n = m.entry(ip).or_insert(0);
+        if *n >= self.max {
+            return None;
+        }
+        *n += 1;
+        Some(Place {
+            gate: self.clone(),
+            ip,
+        })
+    }
+}
+
+/// [`serve`] with at most `per_ip` open connections from one client address (0: no limit). A
+/// client that opens more has the new connection closed at once. Behind a balancer every client
+/// has the balancer's address: leave it at 0 there and limit on the balancer.
+pub async fn serve_limited(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    tls: Option<Arc<ArcSwap<ServerConfig>>>,
+    per_ip: usize,
+    stop: impl std::future::Future<Output = ()>,
+) {
     let graceful = GracefulShutdown::new();
+    let gate = Arc::new(PerIp {
+        max: per_ip,
+        open: Default::default(),
+    });
     tokio::pin!(stop);
     loop {
-        let (tcp, _) = tokio::select! {
+        let (tcp, peer) = tokio::select! {
             r = listener.accept() => match r {
                 Ok(x) => x,
                 Err(_) => { tokio::time::sleep(Duration::from_millis(50)).await; continue }
             },
             _ = &mut stop => break,
         };
+        let Some(place) = gate.take(peer.ip()) else {
+            drop(tcp);
+            continue;
+        };
         let svc = TowerToHyperService::new(router.clone());
         let watcher = graceful.watcher();
         let acceptor = tls.as_ref().map(|t| TlsAcceptor::from(t.load_full()));
         tokio::spawn(async move {
+            let _place = place;
             let builder = || {
                 let mut b = hyper::server::conn::http1::Builder::new();
                 b.timer(TokioTimer::new())

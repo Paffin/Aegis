@@ -1536,9 +1536,25 @@ async fn count_tokens(
         Ok(p) => p,
         Err(m) => return err_response(401, "authentication_error", &m),
     };
-    let Some(up) = st.anthropic.as_ref() else {
+    // the same route and the same model name as for a message: counting tokens is a request
+    // to the provider that will answer, with the same policy
+    let model: String = serde_json::from_slice::<Head>(&body)
+        .unwrap_or_default()
+        .model
+        .as_ref()
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect();
+    let routed = select_route(&st.routes, Protocol::Anthropic, &model, &principal);
+    let Some(up) = routed.map(|r| &r.upstream).or(st.anthropic.as_ref()) else {
         return err_response(404, "not_found_error", "Aegis: провайдер не настроен");
     };
+    let route_name = routed.map_or_else(
+        || Protocol::Anthropic.route().to_string(),
+        |r| r.name.clone(),
+    );
     let rid = st.request_id();
     let meta = ReqMeta {
         principal: &principal.id,
@@ -1546,7 +1562,7 @@ async fn count_tokens(
             .get("x-aegis-conversation")
             .and_then(|v| v.to_str().ok()),
         request_id: &rid,
-        route: Protocol::Anthropic.route(),
+        route: &route_name,
     };
     let (new_body, ctx) = match transform_request(&engine, &meta, &body) {
         Ok(x) => x,
@@ -1557,6 +1573,11 @@ async fn count_tokens(
                 .body(Body::from(rej.body()))
                 .unwrap_or_default()
         }
+    };
+    let new_body = if st.model_aliases.is_empty() {
+        new_body
+    } else {
+        rename_model(new_body, &st.model_aliases)
     };
     match st
         .http

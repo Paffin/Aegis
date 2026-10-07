@@ -23,6 +23,7 @@
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
 
 - **Этап 2:** `aegis-guard` — хук клиента на машине разработчика (`AGG-01`, `AGG-02`, `AGG-07`): закрытые файлы, опасные команды, список узлов, пути приводятся к виду файловой системы; проверен настоящим Claude Code (`scripts/client-claude-guard.sh`); `aegis-guard settings` печатает настройки клиента. Документ: [docs/GUARD.md](docs/GUARD.md).
+- Остатки разбора: `max_connections_per_ip`, `count_tokens` идёт по маршруту и с псевдонимами моделей, разрезание адреса проверено в потоках Chat, Responses и Gemini (все позиции разреза).
 - **Внутренний разбор безопасности** (отдельный проверяющий, не внешний пентест): 7 серьёзных и 6 средних находок, все воспроизведены и закрыты тестами (`tests/hardening.rs`, `tests/review_tools.rs`):
   - потоки: значение в URL, разрезанном границей кусков потока, оставалось подставленным (контекст прежних кусков теперь учитывается);
   - оболочка: `sed … e`, `awk system (…)`, `rg --pre`, `sort --compress-program`, `git -C`, интерпретаторы с `-Bc`/`-le` считались локальными (теперь разбор опций, а не подстрок; `git add/commit` — выполнение кода проекта);

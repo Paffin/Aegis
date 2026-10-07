@@ -18,6 +18,9 @@ pub struct ServerConfig {
     #[serde(default = "d_admin")]
     pub admin_listen: String,
     pub upstream_base_url: String,
+    /// OpenAI-compatible provider; the key comes from `AEGIS_OPENAI_KEY`.
+    #[serde(default)]
+    pub openai_base_url: Option<String>,
     #[serde(default = "d_tenant")]
     pub tenant: String,
     #[serde(default)]
@@ -142,6 +145,7 @@ impl ServerConfig {
         k_t: &[u8],
         k_audit: &[u8],
         provider_key: String,
+        openai_key: Option<String>,
     ) -> Result<AppState, ConfigError> {
         // Short keys make pseudonyms guessable; refuse them (SEC-03).
         if k_t.len() < 16 || k_audit.len() < 16 {
@@ -193,14 +197,24 @@ impl ServerConfig {
                 )
             })
             .collect();
-        Ok(AppState::new(
+        let openai = match (&self.openai_base_url, openai_key) {
+            (Some(url), Some(k)) => Some(Upstream {
+                base_url: url.clone(),
+                api_key: k,
+            }),
+            (Some(_), None) => return Err(ConfigError::Missing("AEGIS_OPENAI_KEY")),
+            (None, _) => None,
+        };
+        let mut st = AppState::new(
             engine,
             Upstream {
                 base_url: self.upstream_base_url.clone(),
                 api_key: provider_key,
             },
             vk,
-        ))
+        );
+        st.openai = openai;
+        Ok(st)
     }
 }
 
@@ -221,7 +235,7 @@ mod tests {
     fn parses_and_builds() {
         let c: ServerConfig = serde_json::from_str(CFG).unwrap();
         assert_eq!(c.listen, "127.0.0.1:8080");
-        let st = c.build(&[1; 32], &[2; 32], "pk".into()).unwrap();
+        let st = c.build(&[1; 32], &[2; 32], "pk".into(), None).unwrap();
         assert!(
             st.keys.contains_key("ab12"),
             "hashes are matched case-insensitively"
@@ -232,12 +246,12 @@ mod tests {
     #[test]
     fn rejects_short_keys_and_bad_values() {
         let c: ServerConfig = serde_json::from_str(CFG).unwrap();
-        assert!(c.build(b"short", &[2; 32], "pk".into()).is_err());
+        assert!(c.build(b"short", &[2; 32], "pk".into(), None).is_err());
         let bad: ServerConfig =
             serde_json::from_str(&CFG.replace("10.50.0.0/16", "10.50.0.0/99")).unwrap();
-        assert!(bad.build(&[1; 32], &[2; 32], "pk".into()).is_err());
+        assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
         let bad: ServerConfig = serde_json::from_str(&CFG.replace("SYSTEM", "NOPE")).unwrap();
-        assert!(bad.build(&[1; 32], &[2; 32], "pk".into()).is_err());
+        assert!(bad.build(&[1; 32], &[2; 32], "pk".into(), None).is_err());
     }
 
     #[test]

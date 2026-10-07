@@ -7,6 +7,7 @@ use crate::anthropic::{transform_request, transform_response, ReqMeta};
 use crate::audit::{Audit, AuditEvent, EventMeta};
 use crate::engine::Engine;
 use crate::metrics::Metrics;
+use crate::openai_chat::{self, ChatStreamTransformer};
 use crate::stream::StreamTransformer;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
@@ -41,6 +42,8 @@ pub struct Upstream {
 pub struct AppState {
     pub engine: Engine,
     pub upstream: Upstream,
+    /// OpenAI-compatible provider (Chat Completions, Responses).
+    pub openai: Option<Upstream>,
     /// SHA-256 (hex) of the virtual key → principal (IAM-03: keys are stored as hashes only).
     pub keys: HashMap<String, Principal>,
     pub http: reqwest::Client,
@@ -55,6 +58,7 @@ impl AppState {
         Self {
             engine,
             upstream,
+            openai: None,
             keys,
             http: reqwest::Client::new(),
             audit: Audit::disabled(),
@@ -96,7 +100,24 @@ fn client_key(h: &HeaderMap) -> Option<String> {
         .map(String::from)
 }
 
-fn err_response(status: u16, kind: &str, message: &str) -> Response {
+fn err_response_for(p: Protocol, status: u16, kind: &'static str, message: &str) -> Response {
+    if p == Protocol::OpenAiChat {
+        let body = crate::anthropic::Reject {
+            status,
+            kind,
+            message: message.to_string(),
+        }
+        .body_openai();
+        return Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body))
+            .unwrap_or_default();
+    }
+    err_response(status, kind, message)
+}
+
+fn err_response(status: u16, kind: &'static str, message: &str) -> Response {
     let body =
         serde_json::to_vec(&json!({"type": "error", "error": {"type": kind, "message": message}}))
             .unwrap_or_default();
@@ -107,9 +128,57 @@ fn err_response(status: u16, kind: &str, message: &str) -> Response {
         .unwrap_or_default()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    Anthropic,
+    OpenAiChat,
+}
+
+impl Protocol {
+    fn path(&self) -> &'static str {
+        match self {
+            Protocol::Anthropic => "/v1/messages",
+            Protocol::OpenAiChat => "/v1/chat/completions",
+        }
+    }
+    fn route(&self) -> &'static str {
+        match self {
+            Protocol::Anthropic => "anthropic-default",
+            Protocol::OpenAiChat => "openai-chat-default",
+        }
+    }
+}
+
+enum AnyStream<'e> {
+    A(Box<StreamTransformer<'e>>),
+    C(Box<ChatStreamTransformer<'e>>),
+}
+
+impl AnyStream<'_> {
+    fn feed(&mut self, b: &[u8]) -> Vec<u8> {
+        match self {
+            AnyStream::A(t) => t.feed(b),
+            AnyStream::C(t) => t.feed(b),
+        }
+    }
+    fn finish(&mut self) -> Vec<u8> {
+        match self {
+            AnyStream::A(t) => t.finish(),
+            AnyStream::C(t) => t.finish(),
+        }
+    }
+    fn ctx(&self) -> &crate::engine::RequestCtx {
+        match self {
+            AnyStream::A(t) => &t.ctx,
+            AnyStream::C(t) => &t.ctx,
+        }
+    }
+}
+
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/messages", any(messages))
+        .route("/v1/chat/completions", any(chat_completions))
         .route("/v1/messages/count_tokens", any(count_tokens))
         .route("/v1/models", get(models))
         .fallback(not_found)
@@ -187,6 +256,7 @@ struct ReqInfo {
     client: String,
     model: String,
     request_bytes: usize,
+    route: &'static str,
 }
 
 fn client_name(h: &HeaderMap) -> String {
@@ -247,7 +317,7 @@ fn complete(
         tenant: &st.engine.keys.tenant,
         principal: &info.principal,
         client: &info.client,
-        route: "anthropic-default",
+        route: info.route,
         model: &info.model,
         request_bytes: info.request_bytes,
         bundle_version: &st.bundle_version,
@@ -271,18 +341,101 @@ async fn messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    proxy(st, Protocol::Anthropic, method, headers, body).await
+}
+
+async fn chat_completions(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(st, Protocol::OpenAiChat, method, headers, body).await
+}
+
+fn upstream_for(st: &AppState, p: Protocol) -> Option<&Upstream> {
+    match p {
+        Protocol::Anthropic => Some(&st.upstream),
+        Protocol::OpenAiChat => st.openai.as_ref(),
+    }
+}
+
+fn provider_headers(h: &HeaderMap, p: Protocol, up: &Upstream) -> reqwest::header::HeaderMap {
+    let mut out = reqwest::header::HeaderMap::new();
+    let allow: &[&str] = match p {
+        Protocol::Anthropic => &[
+            "anthropic-version",
+            "anthropic-beta",
+            "content-type",
+            "accept",
+            "user-agent",
+        ],
+        Protocol::OpenAiChat => &["openai-beta", "content-type", "accept", "user-agent"],
+    };
+    for name in allow {
+        if let Some(v) = h.get(*name) {
+            if let (Ok(n), Ok(v)) = (
+                reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                reqwest::header::HeaderValue::from_bytes(v.as_bytes()),
+            ) {
+                out.insert(n, v);
+            }
+        }
+    }
+    // IAM-02: the provider key is injected here and nowhere else.
+    match p {
+        Protocol::Anthropic => {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(&up.api_key) {
+                out.insert("x-api-key", v);
+            }
+        }
+        Protocol::OpenAiChat => {
+            if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", up.api_key))
+            {
+                out.insert(reqwest::header::AUTHORIZATION, v);
+            }
+        }
+    }
+    out
+}
+
+async fn proxy(
+    st: Arc<AppState>,
+    proto: Protocol,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let fail = |status, kind, msg: &str| err_response_for(proto, status, kind, msg);
     if method != Method::POST {
-        return err_response(405, "invalid_request_error", "Aegis: ожидается POST");
+        return fail(405, "invalid_request_error", "Aegis: ожидается POST");
     }
     let principal = match authenticate(&headers, &st) {
         Ok(p) => p,
-        Err(r) => return *r,
+        Err(r) => {
+            return if proto == Protocol::Anthropic {
+                *r
+            } else {
+                fail(
+                    401,
+                    "authentication_error",
+                    "Aegis: требуется действительный виртуальный ключ",
+                )
+            }
+        }
+    };
+    let Some(up_cfg) = upstream_for(&st, proto) else {
+        return fail(
+            404,
+            "not_found_error",
+            "Aegis: провайдер для этого протокола не настроен",
+        );
     };
     let rid = st.request_id();
     // AUD-04: with `audit.required` traffic stops when the audit queue overflowed (fail-closed).
     if !st.audit.has_room() {
         return with_aegis_headers(
-            err_response(
+            fail(
                 503,
                 "api_error",
                 "Aegis: аудит недоступен, запрос не выполнен",
@@ -308,6 +461,7 @@ async fn messages(
             .take(80)
             .collect(),
         request_bytes: body.len(),
+        route: proto.route(),
     };
     let streaming = parsed
         .as_ref()
@@ -322,7 +476,11 @@ async fn messages(
         conversation: conv.as_deref(),
         request_id: &rid,
     };
-    let (new_body, ctx) = match transform_request(&st.engine, &meta, &body) {
+    let transformed = match proto {
+        Protocol::Anthropic => transform_request(&st.engine, &meta, &body),
+        Protocol::OpenAiChat => openai_chat::transform_request(&st.engine, &meta, &body),
+    };
+    let (new_body, ctx) = match transformed {
         Ok(x) => x,
         Err(rej) => {
             complete(
@@ -331,11 +489,16 @@ async fn messages(
                 &info,
                 "rejected",
             );
+            let b = if proto == Protocol::Anthropic {
+                rej.body()
+            } else {
+                rej.body_openai()
+            };
             return with_aegis_headers(
                 Response::builder()
                     .status(rej.status)
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(rej.body()))
+                    .body(Body::from(b))
                     .unwrap_or_default(),
                 &rid,
                 "",
@@ -345,11 +508,11 @@ async fn messages(
     let summary = ctx.stats.summary();
     tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
 
-    let url = format!("{}/v1/messages", st.upstream.base_url.trim_end_matches('/'));
+    let url = format!("{}{}", up_cfg.base_url.trim_end_matches('/'), proto.path());
     let up = st
         .http
         .post(url)
-        .headers(upstream_headers(&headers, &st))
+        .headers(provider_headers(&headers, proto, up_cfg))
         .body(new_body)
         .send()
         .await;
@@ -358,7 +521,7 @@ async fn messages(
         Err(_) => {
             complete(&st, &ctx, &info, "upstream_error");
             return with_aegis_headers(
-                err_response(502, "api_error", "Aegis: провайдер недоступен"),
+                fail(502, "api_error", "Aegis: провайдер недоступен"),
                 &rid,
                 &summary,
             );
@@ -375,7 +538,14 @@ async fn messages(
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
         let st2 = st.clone();
         tokio::spawn(async move {
-            let mut t = StreamTransformer::new(&st2.engine, ctx);
+            let mut t = match proto {
+                Protocol::Anthropic => {
+                    AnyStream::A(Box::new(StreamTransformer::new(&st2.engine, ctx)))
+                }
+                Protocol::OpenAiChat => {
+                    AnyStream::C(Box::new(ChatStreamTransformer::new(&st2.engine, ctx)))
+                }
+            };
             let mut s = up.bytes_stream();
             while let Some(chunk) = s.next().await {
                 let Ok(chunk) = chunk else { break };
@@ -389,7 +559,7 @@ async fn messages(
                 let _ = tx.send(Ok(Bytes::from(rest))).await;
             }
             // The audit event is written when the stream is over, so it contains the tool call decisions.
-            complete(&st2, &t.ctx, &info, "allow");
+            complete(&st2, t.ctx(), &info, "allow");
         });
         let r = Response::builder()
             .status(200)
@@ -404,7 +574,7 @@ async fn messages(
     let Ok(bytes) = up.bytes().await else {
         complete(&st, &ctx, &info, "upstream_error");
         return with_aegis_headers(
-            err_response(502, "api_error", "Aegis: ответ провайдера оборван"),
+            fail(502, "api_error", "Aegis: ответ провайдера оборван"),
             &rid,
             &summary,
         );
@@ -412,7 +582,10 @@ async fn messages(
     let mut ctx = ctx;
     // RSP-09: non-2xx bodies are provider errors and pass through.
     let out = if status == 200 {
-        transform_response(&st.engine, &mut ctx, &bytes)
+        match proto {
+            Protocol::Anthropic => transform_response(&st.engine, &mut ctx, &bytes),
+            Protocol::OpenAiChat => openai_chat::transform_response(&st.engine, &mut ctx, &bytes),
+        }
     } else {
         bytes.to_vec()
     };

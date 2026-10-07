@@ -8,5 +8,6 @@ pub mod config;
 pub mod engine;
 pub mod json;
 pub mod metrics;
+pub mod openai_chat;
 pub mod server;
 pub mod stream;

@@ -27,6 +27,18 @@ impl Reject {
     }
 }
 
+impl Reject {
+    /// API-03 in OpenAI format.
+    pub fn body_openai(&self) -> Vec<u8> {
+        let code = match self.status {
+            401 => "invalid_api_key",
+            403 => "policy_violation",
+            _ => "invalid_request",
+        };
+        serde_json::to_vec(&json!({"error": {"message": self.message, "type": self.kind, "param": null, "code": code}})).unwrap_or_default()
+    }
+}
+
 pub struct ReqMeta<'a> {
     pub principal: &'a str,
     pub conversation: Option<&'a str>,

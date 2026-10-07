@@ -31,10 +31,14 @@ async fn main() {
     let k_audit = secret("AEGIS_K_AUDIT").unwrap_or_else(|e| fail(e));
     let provider_key = String::from_utf8(secret("AEGIS_PROVIDER_KEY").unwrap_or_else(|e| fail(e)))
         .unwrap_or_else(|_| fail("AEGIS_PROVIDER_KEY is not UTF-8"));
-    let state = Arc::new(
-        cfg.build(&k_t, &k_audit, provider_key)
-            .unwrap_or_else(|e| fail(e)),
-    );
+    let openai_key = secret("AEGIS_OPENAI_KEY")
+        .ok()
+        .and_then(|k| String::from_utf8(k).ok());
+    let mut state = cfg
+        .build(&k_t, &k_audit, provider_key, openai_key)
+        .unwrap_or_else(|e| fail(e));
+    state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
+    let state = Arc::new(state);
 
     let main_l = tokio::net::TcpListener::bind(&cfg.listen)
         .await

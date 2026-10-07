@@ -1,0 +1,37 @@
+# AI service endpoints to block for direct access from the corporate network (EGR-01).
+# Only the Aegis gateway (and nothing else) should reach them. Starting point, not a complete list:
+# verify each entry in your environment before enforcing and review it with every release.
+api.openai.com
+chatgpt.com
+chat.openai.com
+auth.openai.com
+api.anthropic.com
+claude.ai
+console.anthropic.com
+generativelanguage.googleapis.com
+aiplatform.googleapis.com
+gemini.google.com
+aistudio.google.com
+api.mistral.ai
+chat.mistral.ai
+api.cohere.com
+api.deepseek.com
+chat.deepseek.com
+api.perplexity.ai
+www.perplexity.ai
+openrouter.ai
+api.groq.com
+api.x.ai
+api.together.xyz
+api.fireworks.ai
+api.replicate.com
+api.githubcopilot.com
+copilot-proxy.githubusercontent.com
+api2.cursor.sh
+gigachat.devices.sberbank.ru
+ngw.devices.sberbank.ru
+llm.api.cloud.yandex.net
+# wildcard families (use suffix matching in your proxy / RPZ)
+*.openai.azure.com
+*.bedrock-runtime.amazonaws.com
+*.aiplatform.googleapis.com

@@ -42,6 +42,18 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get('content-length', 0)))
         open(sys.argv[2], 'ab').write(body + b"\n")
+        if b'"stream":true' in body.replace(b' ', b''):
+            # slow SSE: 6 text deltas, half a second apart
+            import time
+            self.send_response(200); self.send_header('content-type','text/event-stream'); self.end_headers()
+            ev = lambda n, d: (f"event: {n}\ndata: {json.dumps(d)}\n\n").encode()
+            self.wfile.write(ev('message_start', {"type":"message_start","message":{"id":"m","role":"assistant","content":[]}}))
+            self.wfile.write(ev('content_block_start', {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}))
+            for i in range(6):
+                self.wfile.write(ev('content_block_delta', {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":f"part{i} "}})); self.wfile.flush(); time.sleep(0.5)
+            self.wfile.write(ev('content_block_stop', {"type":"content_block_stop","index":0}))
+            self.wfile.write(ev('message_stop', {"type":"message_stop"})); self.wfile.flush()
+            return
         out = json.dumps({"type":"message","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}).encode()
         self.send_response(200); self.send_header('content-type','application/json'); self.send_header('content-length', str(len(out))); self.end_headers(); self.wfile.write(out)
     def log_message(self, *a): pass
@@ -55,6 +67,7 @@ cat > "$W/gw.json" <<JSON
 JSON
 export AEGIS_K_TENANT=0123456789abcdef0123456789abcdef AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 AEGIS_PROVIDER_KEY=pk
 $BIN/aegis-gateway "$W/gw.json" > "$W/gw.log" 2>&1 &
+GW=$!
 sleep 1.5
 
 req() { curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST -H "x-api-key: $1" "http://127.0.0.1:$PORT/v1/messages" \
@@ -85,4 +98,13 @@ curl -s http://127.0.0.1:$ADMIN/metrics | grep -q 'aegis_bundle_errors_total' &&
 sleep 0.5
 if grep -q -e 'Jd8@2jd82k' -e 'prod-db01' "$W/audit.jsonl" "$W/gw.log"; then echo "FAIL values in audit or logs"; exit 1; else echo "ok   audit and logs hold no values"; fi
 test -s "$W/audit.jsonl" && echo "ok   audit has $(wc -l < "$W/audit.jsonl") events"
+# graceful stop: SIGTERM while a stream is in flight must not cut it (NFR-06)
+curl -s -N -m 20 -X POST -H "x-api-key: $KEY1" "http://127.0.0.1:$PORT/v1/messages" \
+  -d '{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}' > "$W/stream.out" &
+CURL=$!
+sleep 1.2; kill -TERM $GW
+wait $CURL || true
+if grep -q 'part5' "$W/stream.out" && grep -q 'message_stop' "$W/stream.out"; then echo "ok   in-flight stream completed after SIGTERM"; else echo "FAIL stream was cut: $(tr '\n' ' ' < "$W/stream.out" | head -c 300)"; exit 1; fi
+for i in $(seq 1 30); do kill -0 $GW 2>/dev/null || break; sleep 0.1; done
+if kill -0 $GW 2>/dev/null; then echo "FAIL gateway still running after the stream ended"; exit 1; else echo "ok   gateway exited after the stream finished"; fi
 echo "SMOKE OK"

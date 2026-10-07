@@ -83,8 +83,14 @@ async fn main() {
     tracing::info!(listen = %cfg.listen, admin = %cfg.admin_listen, "aegis-gateway started");
 
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    // SIGTERM is what Kubernetes and systemd send; SIGINT is for interactive use.
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async { match term.as_mut() { Some(t) => { t.recv().await; } None => std::future::pending::<()>().await } } => {}
+        }
         let _ = stop_tx.send(true);
     });
     let admin_state = state.clone();

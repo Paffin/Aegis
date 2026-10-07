@@ -1,0 +1,11 @@
+# nftables: only the Aegis gateway may open connections to the providers' address ranges.
+# Fill the sets from your providers' published ranges (or from a resolved allow-list job).
+table inet aegis_egress {
+  set provider_nets { type ipv4_addr; flags interval; }
+  set gateway_hosts { type ipv4_addr; elements = { 10.0.10.11, 10.0.10.12 }; }
+
+  chain forward {
+    type filter hook forward priority 0; policy accept;
+    ip daddr @provider_nets ip saddr != @gateway_hosts counter reject with icmp type admin-prohibited comment "AI providers only via Aegis"
+  }
+}

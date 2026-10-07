@@ -144,6 +144,18 @@ pub async fn fetch(http: &reqwest::Client, src: &Source) -> Result<Vec<u8>, Stri
     }
 }
 
+/// The bundle holds the employee dictionary: readable by the service user only (mode 0600).
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    o.mode(0o600);
+    o.open(path)?.write_all(data)
+}
+
 fn digest(b: &[u8]) -> [u8; 32] {
     Sha256::digest(b).into()
 }
@@ -168,7 +180,7 @@ impl Loader {
                         *last = Some(d);
                         if let Some(c) = &self.cache {
                             let tmp = c.with_extension("tmp");
-                            if std::fs::write(&tmp, &raw)
+                            if write_private(&tmp, &raw)
                                 .and_then(|_| std::fs::rename(&tmp, c))
                                 .is_err()
                             {
@@ -409,6 +421,15 @@ mod tests {
             Some("v1")
         );
         assert!(cache.exists(), "last valid bundle is stored locally");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "the cache holds the employee dictionary"
+            );
+        }
         assert_eq!(
             l.load_once(&st, &mut last).await.unwrap(),
             None,

@@ -1,0 +1,38 @@
+image:
+  repository: ghcr.io/paffin/aegis
+  tag: ""            # defaults to the chart appVersion
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# Gateway configuration written to /etc/aegis/gateway.json (see docs/ADMIN.md).
+config:
+  upstreamBaseUrl: https://api.anthropic.com
+  openaiBaseUrl: ""        # set to enable /v1/chat/completions and /v1/responses
+  tenant: default
+  auditPath: /var/log/aegis/audit.jsonl
+  auditRequired: false
+  bundle:
+    source: ""             # path or https URL of the signed bundle
+    trustedKeys: []        # hex ed25519 public keys allowed to sign bundles
+    reloadSeconds: 15
+
+# Secrets are taken from an existing Secret (never from values).
+# Required keys: AEGIS_K_TENANT, AEGIS_K_AUDIT, AEGIS_PROVIDER_KEY; optional: AEGIS_OPENAI_KEY.
+existingSecret: aegis-secrets
+
+service:
+  port: 8080
+
+# Which namespaces may call the gateway (NetworkPolicy).
+allowedClientNamespaces: []
+
+# Egress: only DNS and the providers' address ranges. Fill in your provider endpoints or proxy.
+egressCidrs: []
+
+resources:
+  requests: { cpu: 500m, memory: 512Mi }
+  limits: { memory: 2Gi }
+
+podDisruptionBudget:
+  minAvailable: 1

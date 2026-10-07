@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aegis.name" . }}
+  labels: {{- include "aegis.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ include "aegis.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: http, port: {{ .Values.service.port }}, targetPort: http }
+  # The admin port (probes, metrics) is deliberately not exposed through the Service (SEC-06).

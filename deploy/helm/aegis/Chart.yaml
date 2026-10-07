@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aegis
+description: Aegis gateway — AI security control plane for LLMs and AI agents
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

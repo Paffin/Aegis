@@ -1,0 +1,45 @@
+[Unit]
+Description=Aegis gateway (AI security control plane)
+Documentation=https://github.com/paffin/aegis
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aegis
+Group=aegis
+# Secrets live in a root-owned file, mode 0600 (AEGIS_K_TENANT, AEGIS_K_AUDIT, AEGIS_PROVIDER_KEY, AEGIS_OPENAI_KEY).
+EnvironmentFile=/etc/aegis/secrets.env
+ExecStart=/usr/local/bin/aegis-gateway /etc/aegis/gateway.json
+Restart=on-failure
+RestartSec=2
+
+# Graceful stop: active streams may finish for up to 10 minutes (NFR-06).
+KillSignal=SIGINT
+TimeoutStopSec=620
+
+# SEC-02: request bodies must not reach disk through crashes or swap.
+LimitCORE=0
+MemorySwapMax=0
+
+# Sandbox
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Audit file and bundle cache are the only writable places.
+ReadWritePaths=/var/lib/aegis /var/log/aegis
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aegis.name" . }}-config
+  labels: {{- include "aegis.labels" . | nindent 4 }}
+data:
+  gateway.json: |
+    {
+      "listen": "0.0.0.0:8080",
+      "admin_listen": "0.0.0.0:9090",
+      "upstream_base_url": {{ .Values.config.upstreamBaseUrl | quote }},
+      {{- if .Values.config.openaiBaseUrl }}
+      "openai_base_url": {{ .Values.config.openaiBaseUrl | quote }},
+      {{- end }}
+      "tenant": {{ .Values.config.tenant | quote }},
+      "audit_path": {{ .Values.config.auditPath | quote }},
+      "audit_required": {{ .Values.config.auditRequired }},
+      "bundle": {
+        "source": {{ required "config.bundle.source is required: a signed bundle supplies policy and virtual keys" .Values.config.bundle.source | quote }},
+        "cache_path": "/var/lib/aegis/bundle.cache.json",
+        "trusted_keys": {{ required "config.bundle.trustedKeys must list at least one signing key" .Values.config.bundle.trustedKeys | toJson }},
+        "reload_seconds": {{ .Values.config.bundle.reloadSeconds }}
+      }
+    }

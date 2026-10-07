@@ -1,0 +1,8 @@
+; BIND Response Policy Zone: AI endpoints resolve to the gateway's address for ordinary clients,
+; the gateway itself uses a resolver without this zone. Repeat the CNAME/A for every name in ai-domains.txt.
+$TTL 60
+@ IN SOA localhost. root.localhost. (1 3600 600 86400 60)
+  IN NS  localhost.
+api.openai.com        IN A 10.0.10.10   ; address of the Aegis gateway load balancer
+api.anthropic.com     IN A 10.0.10.10
+*.openai.azure.com    IN A 10.0.10.10

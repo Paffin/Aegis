@@ -49,11 +49,12 @@ async fn main() {
         let _ = tokio::signal::ctrl_c().await;
         let _ = stop_tx.send(true);
     });
+    let admin_state = state.clone();
     let mut rx1 = stop_rx.clone();
     let mut rx2 = stop_rx.clone();
     let mut rx3 = stop_rx;
     tokio::spawn(async move {
-        let _ = axum::serve(admin_l, admin_app())
+        let _ = axum::serve(admin_l, admin_app(admin_state))
             .with_graceful_shutdown(async move {
                 let _ = rx2.changed().await;
             })

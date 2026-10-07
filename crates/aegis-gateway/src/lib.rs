@@ -2,8 +2,10 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod anthropic;
+pub mod audit;
 pub mod config;
 pub mod engine;
 pub mod json;
+pub mod metrics;
 pub mod server;
 pub mod stream;

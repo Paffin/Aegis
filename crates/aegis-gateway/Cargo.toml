@@ -19,6 +19,8 @@ tracing-subscriber.workspace = true
 regex.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
+tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [lints]

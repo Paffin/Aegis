@@ -32,6 +32,18 @@ pub struct ServerConfig {
     #[serde(default)]
     pub terms: Vec<Term>,
     pub virtual_keys: Vec<VirtualKey>,
+    /// JSONL audit file; stdout when absent (AUD-04).
+    #[serde(default)]
+    pub audit_path: Option<String>,
+    /// With `true` an overflowing audit queue stops traffic instead of dropping events.
+    #[serde(default)]
+    pub audit_required: bool,
+    #[serde(default = "d_queue")]
+    pub audit_queue: usize,
+}
+
+fn d_queue() -> usize {
+    10_000
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +122,21 @@ pub fn parse_cidr(s: &str) -> Option<(u32, u8)> {
 }
 
 impl ServerConfig {
+    pub fn build_audit(&self) -> Result<crate::audit::Audit, ConfigError> {
+        use crate::audit::Audit;
+        Ok(match &self.audit_path {
+            Some(p) => {
+                let f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(p)
+                    .map_err(|e| ConfigError::Invalid(format!("audit file {p}: {e}")))?;
+                Audit::to_writer(f, self.audit_queue, self.audit_required)
+            }
+            None => Audit::to_writer(std::io::stdout(), self.audit_queue, self.audit_required),
+        })
+    }
+
     pub fn build(
         &self,
         k_t: &[u8],

@@ -156,10 +156,32 @@ impl DetectCache {
     }
 }
 
+/// Per-entity audit aggregate (AUD-01, AUD-02): hash, never the value.
+#[derive(Debug, Clone)]
+pub struct EntityAgg {
+    pub count: u32,
+    pub action: &'static str,
+    pub rule: String,
+}
+
+/// One tool call decision on the response side (AUD-01).
+#[derive(Debug, Clone)]
+pub struct SinkAudit {
+    pub tool: String,
+    pub sink: &'static str,
+    pub decision: &'static str,
+    pub rule: String,
+    pub classes: Vec<&'static str>,
+}
+
 /// Counters for `X-Aegis-Summary` (AUD-06) and audit.
 #[derive(Default, Debug, Clone)]
 pub struct Stats {
     pub by_class: BTreeMap<&'static str, u32>,
+    /// (type, kind, audit_hash) -> aggregate
+    pub entities: BTreeMap<(&'static str, Option<&'static str>, String), EntityAgg>,
+    pub sinks: Vec<SinkAudit>,
+    pub timings_ms: BTreeMap<&'static str, f64>,
     pub denied: u32,
     pub blocks_total: u32,
     pub blocks_scanned: u32,
@@ -188,6 +210,8 @@ pub struct RequestCtx {
     pub classes: HashSet<Class>,
     pub stats: Stats,
     pub request_id: String,
+    /// `HMAC(K_audit, salt)` for per-conversation reports (AUD-03).
+    pub conversation_hash: String,
 }
 
 /// One scanned string literal of the request.
@@ -197,6 +221,27 @@ pub struct Blk<'n> {
     pub source: Source,
     /// Prepend the Aegis notice to this block (system prompt).
     pub is_system: bool,
+}
+
+fn record_entity(
+    engine: &Engine,
+    stats: &mut Stats,
+    text: &str,
+    e: &Entity,
+    action: &'static str,
+    rule: &str,
+) {
+    let canon = aegis_core::pseudo::canon(e, &text[e.span.start..e.span.end]);
+    let h = aegis_core::crypto::audit_hash(&engine.keys, e.ty.marker(), &canon);
+    let agg = stats
+        .entities
+        .entry((e.ty.marker(), e.kind, h))
+        .or_insert(EntityAgg {
+            count: 0,
+            action,
+            rule: rule.to_string(),
+        });
+    agg.count += 1;
 }
 
 pub struct Rendered {
@@ -225,7 +270,10 @@ pub fn process_blocks(
     let mut dropped = vec![false; blocks.len()];
     for (i, b) in blocks.iter().enumerate() {
         ctx.stats.blocks_total += 1;
+        let t_scan = std::time::Instant::now();
         let (ents, hit) = engine.scan(&b.text);
+        *ctx.stats.timings_ms.entry("detect").or_insert(0.0) +=
+            t_scan.elapsed().as_secs_f64() * 1000.0;
         if !hit {
             ctx.stats.blocks_scanned += 1;
         }
@@ -237,10 +285,12 @@ pub fn process_blocks(
                 Ingress::Mask => {
                     *ctx.stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
                     ctx.classes.insert(e.ty.class());
+                    record_entity(engine, &mut ctx.stats, &b.text, &e, "mask", &rule);
                     keep.push(e);
                 }
                 Ingress::DropBlock => {
                     *ctx.stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
+                    record_entity(engine, &mut ctx.stats, &b.text, &e, "drop_block", &rule);
                     ctx.stats.rules.push(rule);
                     dropped[i] = true;
                 }
@@ -267,6 +317,21 @@ pub fn process_blocks(
         texts.push((out != b.text).then_some(out));
     }
     Ok(Rendered { texts })
+}
+
+impl RequestCtx {
+    /// Context for requests that were rejected before any block was processed.
+    pub fn empty(request_id: &str) -> Self {
+        Self {
+            salt: Salt([0; 32]),
+            mapping: Mapping::default(),
+            trifecta: TrifectaState::default(),
+            classes: HashSet::new(),
+            stats: Stats::default(),
+            request_id: request_id.to_string(),
+            conversation_hash: String::new(),
+        }
+    }
 }
 
 impl std::fmt::Debug for RequestCtx {

@@ -2,7 +2,8 @@
 //! RSP-02, RSP-07, API-03, API-04 — Anthropic Messages adapter.
 
 use crate::engine::{
-    process_blocks, Blk, Engine, IngressError, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE,
+    process_blocks, Blk, Engine, IngressError, RequestCtx, SinkAudit, Stats, ATTACHMENT_NOTICE,
+    NOTICE,
 };
 use crate::json::{self, Edits, Node};
 use aegis_core::crypto::{derive_salt, SaltInput};
@@ -97,6 +98,7 @@ pub fn transform_request(
         kind: "invalid_request_error",
         message: format!("Aegis: {m}"),
     };
+    let t_parse = std::time::Instant::now();
     let root = json::parse(body).map_err(|e| match e {
         json::JsonError::TooDeep => bad("JSON глубже 128 уровней"),
         json::JsonError::Syntax(_) => bad("тело запроса не является корректным JSON"),
@@ -104,6 +106,7 @@ pub fn transform_request(
     if !matches!(root, Node::Obj { .. }) {
         return Err(bad("ожидался объект JSON"));
     }
+    let parse_ms = t_parse.elapsed().as_secs_f64() * 1000.0;
 
     // PRO-09: provider-side tools run outside Aegis.
     if root.get("mcp_servers").is_some() {
@@ -328,6 +331,7 @@ pub fn transform_request(
 
     // Salt (PSE-03)
     let fu: Vec<&str> = first_user.iter().map(|s| s.as_str()).collect();
+    let t_start = std::time::Instant::now();
     let (salt, _) = derive_salt(
         &engine.keys,
         &SaltInput {
@@ -337,6 +341,7 @@ pub fn transform_request(
             first_user_message: &fu,
         },
     );
+    let salt_bytes = salt.0;
     let mut ctx = RequestCtx {
         salt,
         mapping: Mapping::default(),
@@ -344,6 +349,10 @@ pub fn transform_request(
         classes: HashSet::new(),
         stats: Stats::default(),
         request_id: meta.request_id.to_string(),
+        conversation_hash: engine.keys.k_audit.mac(&[b"conv", &salt_bytes])[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
     };
 
     let rendered = process_blocks(engine, &mut ctx, &blocks).map_err(|e| match e {
@@ -355,6 +364,10 @@ pub fn transform_request(
         }
     }
     ctx.trifecta = engine.trifecta.state(&ctx.classes, untrusted);
+    ctx.stats.timings_ms.insert("parse", parse_ms);
+    ctx.stats
+        .timings_ms
+        .insert("transform", t_start.elapsed().as_secs_f64() * 1000.0);
 
     match notice_insert {
         Some(NoticeInsert::IntoArray { at, empty }) => {
@@ -393,6 +406,7 @@ pub struct Denied {
     pub rule: String,
     pub sink: Sink,
     pub reason: String,
+    pub classes: Vec<&'static str>,
 }
 
 fn reason_text(reason: &str) -> &'static str {
@@ -486,6 +500,7 @@ pub fn restore_tool_call(
                     rule: d.rule.clone(),
                     sink,
                     reason: d.reason.to_string(),
+                    classes: vec![d.ty.class().as_str()],
                 });
             } else if o.trifecta_blocked {
                 blocked_by_trifecta = true;
@@ -493,19 +508,37 @@ pub fn restore_tool_call(
                     rule: "trifecta".into(),
                     sink,
                     reason: "trifecta".into(),
+                    classes: vec![],
                 });
             }
         }
         *s = o.text;
     });
     let _ = blocked_by_trifecta;
+    let tool_sink = Sink::from_tool(name).unwrap_or_else(|| cmd_sink.unwrap_or(Sink::ShellNetwork));
     match denied {
         Some(d) => {
             ctx.stats.denied += 1;
             ctx.stats.rules.push(d.rule.clone());
+            ctx.stats.sinks.push(SinkAudit {
+                tool: name.to_string(),
+                sink: d.sink.as_str(),
+                decision: "deny",
+                rule: d.rule.clone(),
+                classes: d.classes.clone(),
+            });
             Err(d)
         }
-        None => Ok(()),
+        None => {
+            ctx.stats.sinks.push(SinkAudit {
+                tool: name.to_string(),
+                sink: tool_sink.as_str(),
+                decision: "allow",
+                rule: "default".into(),
+                classes: vec![],
+            });
+            Ok(())
+        }
     }
 }
 

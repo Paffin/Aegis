@@ -4,7 +4,9 @@
 //! protocol adapters, streaming.
 
 use crate::anthropic::{transform_request, transform_response, ReqMeta};
+use crate::audit::{Audit, AuditEvent, EventMeta};
 use crate::engine::Engine;
+use crate::metrics::Metrics;
 use crate::stream::StreamTransformer;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
@@ -42,6 +44,9 @@ pub struct AppState {
     /// SHA-256 (hex) of the virtual key → principal (IAM-03: keys are stored as hashes only).
     pub keys: HashMap<String, Principal>,
     pub http: reqwest::Client,
+    pub audit: Audit,
+    pub metrics: Arc<Metrics>,
+    pub bundle_version: String,
     counter: AtomicU64,
 }
 
@@ -52,6 +57,9 @@ impl AppState {
             upstream,
             keys,
             http: reqwest::Client::new(),
+            audit: Audit::disabled(),
+            metrics: Arc::new(Metrics::default()),
+            bundle_version: "dev".into(),
             counter: AtomicU64::new(0),
         }
     }
@@ -109,11 +117,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// OBS-04: served on a separate port (SEC-06).
-pub fn admin_app() -> Router {
+/// OBS-04, OBS-01: served on a separate port (SEC-06).
+pub fn admin_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(|| async { "ready" }))
+        .route(
+            "/metrics",
+            get(|State(st): State<Arc<AppState>>| async move { st.metrics.render() }),
+        )
+        .with_state(state)
 }
 
 async fn not_found(uri: Uri) -> Response {
@@ -169,6 +182,89 @@ fn with_aegis_headers(mut r: Response, request_id: &str, summary: &str) -> Respo
     r
 }
 
+struct ReqInfo {
+    principal: String,
+    client: String,
+    model: String,
+    request_bytes: usize,
+}
+
+fn client_name(h: &HeaderMap) -> String {
+    let raw = h
+        .get("x-aegis-client")
+        .or_else(|| h.get(header::USER_AGENT))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    raw.split(['/', ' '])
+        .next()
+        .unwrap_or("unknown")
+        .chars()
+        .take(40)
+        .collect()
+}
+
+/// Single completion point: audit event (AUD-01) and metrics (OBS-01) for every request.
+fn complete(
+    st: &AppState,
+    ctx: &crate::engine::RequestCtx,
+    info: &ReqInfo,
+    decision: &'static str,
+) {
+    let m = &st.metrics;
+    m.inc("aegis_requests_total", &[("decision", decision)], 1);
+    for (class, n) in &ctx.stats.by_class {
+        m.inc("aegis_entities_total", &[("class", class)], *n as u64);
+    }
+    for r in &ctx.stats.sinks {
+        if r.decision == "deny" {
+            m.inc(
+                "aegis_denied_total",
+                &[("rule", &r.rule), ("sink", r.sink)],
+                1,
+            );
+        }
+    }
+    for (stage, ms) in &ctx.stats.timings_ms {
+        m.observe_ms("aegis_stage_ms", &[("stage", stage)], *ms);
+    }
+    let scanned = ctx.stats.blocks_scanned as u64;
+    m.inc(
+        "aegis_detect_blocks_total",
+        &[("result", "scanned")],
+        scanned,
+    );
+    m.inc(
+        "aegis_detect_blocks_total",
+        &[("result", "cached")],
+        (ctx.stats.blocks_total as u64).saturating_sub(scanned),
+    );
+    m.inc(
+        "aegis_pseudonym_collisions_total",
+        &[],
+        ctx.mapping.collisions as u64,
+    );
+    let meta = EventMeta {
+        tenant: &st.engine.keys.tenant,
+        principal: &info.principal,
+        client: &info.client,
+        route: "anthropic-default",
+        model: &info.model,
+        request_bytes: info.request_bytes,
+        bundle_version: &st.bundle_version,
+        trifecta_mode: match st.engine.trifecta.mode {
+            aegis_core::policy::TrifectaMode::Enforce => "enforce",
+            aegis_core::policy::TrifectaMode::Monitor => "monitor",
+        },
+    };
+    if st
+        .audit
+        .emit(&AuditEvent::from_ctx(ctx, &meta, decision))
+        .is_err()
+    {
+        m.inc("aegis_audit_overflow_total", &[], 1);
+    }
+}
+
 async fn messages(
     State(st): State<Arc<AppState>>,
     method: Method,
@@ -183,10 +279,43 @@ async fn messages(
         Err(r) => return *r,
     };
     let rid = st.request_id();
+    // AUD-04: with `audit.required` traffic stops when the audit queue overflowed (fail-closed).
+    if !st.audit.has_room() {
+        return with_aegis_headers(
+            err_response(
+                503,
+                "api_error",
+                "Aegis: аудит недоступен, запрос не выполнен",
+            ),
+            &rid,
+            "",
+        );
+    }
     let conv = headers
         .get("x-aegis-conversation")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&body).ok();
+    let info = ReqInfo {
+        principal: principal.id.clone(),
+        client: client_name(&headers),
+        model: parsed
+            .as_ref()
+            .and_then(|v| v.get("model"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(80)
+            .collect(),
+        request_bytes: body.len(),
+    };
+    let streaming = parsed
+        .as_ref()
+        .and_then(|v| v.get("stream"))
+        .and_then(|s| s.as_bool())
+        .unwrap_or(false);
+    drop(parsed);
+
     let t0 = Instant::now();
     let meta = ReqMeta {
         principal: &principal.id,
@@ -196,6 +325,12 @@ async fn messages(
     let (new_body, ctx) = match transform_request(&st.engine, &meta, &body) {
         Ok(x) => x,
         Err(rej) => {
+            complete(
+                &st,
+                &crate::engine::RequestCtx::empty(&rid),
+                &info,
+                "rejected",
+            );
             return with_aegis_headers(
                 Response::builder()
                     .status(rej.status)
@@ -204,17 +339,12 @@ async fn messages(
                     .unwrap_or_default(),
                 &rid,
                 "",
-            )
+            );
         }
     };
-    let overhead_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let summary = ctx.stats.summary();
-    tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms, "request transformed");
+    tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
 
-    let streaming = serde_json::from_slice::<serde_json::Value>(&body)
-        .ok()
-        .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
-        .unwrap_or(false);
     let url = format!("{}/v1/messages", st.upstream.base_url.trim_end_matches('/'));
     let up = st
         .http
@@ -226,11 +356,12 @@ async fn messages(
     let up = match up {
         Ok(r) => r,
         Err(_) => {
+            complete(&st, &ctx, &info, "upstream_error");
             return with_aegis_headers(
                 err_response(502, "api_error", "Aegis: провайдер недоступен"),
                 &rid,
                 &summary,
-            )
+            );
         }
     };
     let status = up.status().as_u16();
@@ -250,13 +381,15 @@ async fn messages(
                 let Ok(chunk) = chunk else { break };
                 let out = t.feed(&chunk);
                 if !out.is_empty() && tx.send(Ok(Bytes::from(out))).await.is_err() {
-                    return;
+                    break;
                 }
             }
             let rest = t.finish();
             if !rest.is_empty() {
                 let _ = tx.send(Ok(Bytes::from(rest))).await;
             }
+            // The audit event is written when the stream is over, so it contains the tool call decisions.
+            complete(&st2, &t.ctx, &info, "allow");
         });
         let r = Response::builder()
             .status(200)
@@ -269,6 +402,7 @@ async fn messages(
 
     let ct = up.headers().get(header::CONTENT_TYPE).cloned();
     let Ok(bytes) = up.bytes().await else {
+        complete(&st, &ctx, &info, "upstream_error");
         return with_aegis_headers(
             err_response(502, "api_error", "Aegis: ответ провайдера оборван"),
             &rid,
@@ -282,6 +416,16 @@ async fn messages(
     } else {
         bytes.to_vec()
     };
+    complete(
+        &st,
+        &ctx,
+        &info,
+        if status == 200 {
+            "allow"
+        } else {
+            "upstream_error"
+        },
+    );
     let mut r = Response::builder().status(status);
     if let Some(ct) = ct {
         r = r.header(header::CONTENT_TYPE, ct);

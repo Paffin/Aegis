@@ -317,6 +317,7 @@ impl<'e> StreamTransformer<'e> {
                 rule: "malformed".into(),
                 sink: aegis_core::policy::Sink::Unknown,
                 reason: "policy".into(),
+                classes: vec![],
             };
             self.ctx.stats.denied += 1;
             return self.replace_with_text(i, &denial_text(name, &d, &self.ctx.request_id));

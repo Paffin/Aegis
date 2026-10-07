@@ -3,7 +3,7 @@
 
 use crate::engine::{Engine, RequestCtx, SinkAudit};
 use aegis_core::policy::{is_shell_tool, Sink};
-use aegis_core::restore::{restore, sink_for_command, SinkContext};
+use aegis_core::restore::{restore, restore_after, sink_for_command, SinkContext};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -60,9 +60,24 @@ pub fn restore_text(engine: &Engine, ctx: &RequestCtx, text: &str) -> (String, b
         trifecta: ctx.trifecta,
         precleared: false,
     };
-    let o = restore(text, &ctx.mapping, &engine.restore_policy, &c);
+    // The pieces of a stream are restored one by one, but whether a value may be restored can
+    // depend on what came before it (the start of a URL): the end of the earlier pieces is the
+    // context. A text restored in one go has none, and leaves its own end as context for the next.
+    let mut tail = ctx.text_tail.borrow_mut();
+    let o = restore_after(&tail, text, &ctx.mapping, &engine.restore_policy, &c);
+    tail.push_str(text);
+    if tail.len() > TAIL_BYTES {
+        let mut cut = tail.len() - TAIL_BYTES;
+        while !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        tail.drain(..cut);
+    }
     (o.text, o.hinted)
 }
+
+/// How much of the released text is kept as context.
+const TAIL_BYTES: usize = 600;
 
 /// File the call writes to, if the arguments name one.
 pub fn tool_path(input: &Value) -> Option<String> {
@@ -862,6 +877,7 @@ pub fn finish_request<'n>(
     );
     let salt_bytes = salt.0;
     let mut ctx = RequestCtx {
+        text_tail: Default::default(),
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

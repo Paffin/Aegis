@@ -329,6 +329,7 @@ pub fn transform_request(
     );
     let salt_bytes = salt.0;
     let mut ctx = RequestCtx {
+        text_tail: Default::default(),
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

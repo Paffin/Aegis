@@ -326,6 +326,9 @@ pub struct RequestCtx {
     pub route: String,
     /// `HMAC(K_audit, salt)` for per-conversation reports (AUD-03).
     pub conversation_hash: String,
+    /// The end of the text already sent to the client in this response, as the model wrote it:
+    /// the context for the next piece of a stream (RST-11 looks back to find the start of a URL).
+    pub text_tail: std::cell::RefCell<String>,
 }
 
 /// One scanned string literal of the request.
@@ -485,6 +488,7 @@ impl RequestCtx {
             request_id: request_id.to_string(),
             route: String::new(),
             conversation_hash: String::new(),
+            text_tail: Default::default(),
         }
     }
 }

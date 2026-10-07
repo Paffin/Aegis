@@ -100,6 +100,27 @@ pub fn restore(
     policy: &RestorePolicy,
     ctx: &SinkContext<'_>,
 ) -> RestoreOutcome {
+    restore_after("", text, mapping, policy, ctx)
+}
+
+/// [`restore`] for a piece of a longer text, with the text before it as context. In a stream the
+/// pieces are released one by one; what decides whether a value may be restored (is it inside a
+/// URL that leads out?) can lie in the piece before. The context is only read: the outcome is
+/// about `text` alone, and the context must end where `text` begins, between two tokens.
+pub fn restore_after(
+    before: &str,
+    text: &str,
+    mapping: &Mapping,
+    policy: &RestorePolicy,
+    ctx: &SinkContext<'_>,
+) -> RestoreOutcome {
+    let joined;
+    let (text, skip) = if before.is_empty() {
+        (text, 0)
+    } else {
+        joined = format!("{before}{text}");
+        (joined.as_str(), before.len())
+    };
     let sink = ctx.sink;
     let mut toks: Vec<Tok> = vec![];
     let mut unresolved = 0u32;
@@ -129,7 +150,13 @@ pub fn restore(
         match found {
             Some(f) => {
                 let Found::Bound(b) = &f else { unreachable!() };
-                let (action, rule) = policy.decide(b.ty, b.kind, sink);
+                // a token of the context was decided when it was released; here it only counts
+                // as part of the text around the others
+                let (action, rule) = if m.start() < skip {
+                    (Action::KeepMasked, "context".to_string())
+                } else {
+                    policy.decide(b.ty, b.kind, sink)
+                };
                 toks.push(Tok {
                     start: m.start(),
                     end: m.end(),
@@ -141,7 +168,9 @@ pub fn restore(
             None => {
                 // Bare words and short hosts that match nothing are ordinary text.
                 if c.name("exact").is_some() || c.name("loose").is_some() {
-                    unresolved += 1;
+                    if m.start() >= skip {
+                        unresolved += 1;
+                    }
                     toks.push(Tok {
                         start: m.start(),
                         end: m.end(),
@@ -152,6 +181,11 @@ pub fn restore(
                 }
             }
         }
+    }
+
+    // a token across the border of the context cannot be cut: judge the piece on its own
+    if skip > 0 && toks.iter().any(|t| t.start < skip && t.end > skip) {
+        return restore_after("", &text[skip..], mapping, policy, ctx);
     }
 
     let mut denials: Vec<Denial> = vec![];
@@ -321,7 +355,13 @@ pub fn restore(
     let mut out = String::with_capacity(text.len());
     let mut cur = 0;
     let mut leftovers = false;
+    let mut split: Option<usize> = None;
     for (i, t) in toks.iter().enumerate() {
+        if split.is_none() && t.start >= skip {
+            out.push_str(&text[cur..skip]);
+            cur = skip;
+            split = Some(out.len());
+        }
         out.push_str(&text[cur..t.start]);
         let raw = &text[t.start..t.end];
         match &t.found {
@@ -349,7 +389,13 @@ pub fn restore(
         }
         cur = t.end;
     }
+    if split.is_none() {
+        out.push_str(&text[cur..skip]);
+        cur = skip;
+        split = Some(out.len());
+    }
     out.push_str(&text[cur..]);
+    let out = out[split.unwrap_or(0)..].to_string();
 
     // RST-05, INV-5: a marker never reaches the disk.
     if sink == Sink::FileWrite && leftovers {

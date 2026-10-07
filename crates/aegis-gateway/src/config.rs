@@ -67,6 +67,9 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// DET-20: recognize blocks of closed code by fingerprints (`aegis index build`).
+    #[serde(default)]
+    pub code_index: Option<crate::code_index::CodeIndexConfig>,
     /// IAM-04: accept JWTs of an OpenID Connect provider next to virtual keys.
     #[serde(default)]
     pub oidc: Option<crate::oidc::OidcConfig>,
@@ -421,7 +424,13 @@ impl ServerConfig {
                 "detect_cache_mb and detect_budget_ms must be at least 1".into(),
             ));
         }
-        let engine = Engine::new(keys, detect, dict).with_limits(
+        let code = match &self.code_index {
+            Some(c) => {
+                Some(crate::code_index::CodeGuard::load(c, k_t).map_err(ConfigError::Invalid)?)
+            }
+            None => None,
+        };
+        let engine = Engine::new(keys, detect, dict).with_code(code).with_limits(
             self.detect_cache_mb.saturating_mul(1 << 20),
             std::time::Duration::from_millis(self.detect_budget_ms),
         );

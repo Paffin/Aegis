@@ -4,6 +4,7 @@
 use crate::json::Node;
 use aegis_core::crypto::{Salt, TenantKeys};
 use aegis_core::detect::{DetectConfig, Pipeline, ScanFault};
+use aegis_core::fingerprint::CodeMatch;
 use aegis_core::policy::{Ingress, IngressPolicy, RestorePolicy, TrifectaConfig, TrifectaState};
 use aegis_core::pseudo::{Mapping, PseudoConfig, Pseudonymizer, Source};
 use aegis_core::types::{Class, Entity, EntityType};
@@ -34,6 +35,8 @@ pub struct Engine {
     pub response: aegis_core::danger::ResponsePolicy,
     /// POL-05
     pub request: aegis_core::policy::RequestPolicy,
+    /// DET-20: fingerprints of closed code; `None` without `code_index`.
+    pub code: Option<std::sync::Arc<crate::code_index::CodeGuard>>,
     cache: Mutex<DetectCache>,
     /// DET-09: the longest a block may be scanned.
     pub detect_budget: Duration,
@@ -59,6 +62,8 @@ pub struct Scanned {
     pub hit: bool,
     /// The scan did not finish (DET-09): `entities` is empty and must not be taken for "clean".
     pub fault: Option<ScanFault>,
+    /// The block looks like a repository in the code index (DET-20).
+    pub code: Option<CodeMatch>,
 }
 
 impl Engine {
@@ -79,6 +84,7 @@ impl Engine {
             ingress: IngressPolicy::default(),
             response: Default::default(),
             request: Default::default(),
+            code: None,
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }
@@ -88,6 +94,12 @@ impl Engine {
     pub fn with_limits(mut self, cache_bytes: usize, budget: Duration) -> Self {
         self.cache = Mutex::new(DetectCache::new(cache_bytes));
         self.detect_budget = budget;
+        self
+    }
+
+    /// DET-20: the index of closed code.
+    pub fn with_code(mut self, g: Option<std::sync::Arc<crate::code_index::CodeGuard>>) -> Self {
+        self.code = g;
         self
     }
 
@@ -118,6 +130,7 @@ impl Engine {
             ingress: c.ingress,
             response: c.response,
             request: c.request,
+            code: None,
             cache: Mutex::new(DetectCache::new(DEFAULT_CACHE_BYTES)),
             detect_budget: DEFAULT_DETECT_BUDGET,
         }
@@ -127,6 +140,13 @@ impl Engine {
     /// another's.
     pub fn cache_key(&self, text: &str) -> [u8; 32] {
         let mut h = self.hash_prefix.clone();
+        // a new index must not be answered from what the old one found
+        h.update(
+            self.code
+                .as_ref()
+                .map_or(0, |g| g.generation())
+                .to_le_bytes(),
+        );
         h.update(text.as_bytes());
         h.finalize().into()
     }
@@ -135,12 +155,15 @@ impl Engine {
     /// The cache keeps positions and types only; the person key is stored hashed.
     pub fn scan(&self, text: &str) -> Scanned {
         let key = self.cache_key(text);
-        if let Some((entities, grammar)) = self.cache.lock().ok().and_then(|mut c| c.get(&key)) {
+        if let Some((entities, grammar, code)) =
+            self.cache.lock().ok().and_then(|mut c| c.get(&key))
+        {
             return Scanned {
                 entities,
                 grammar,
                 hit: true,
                 fault: None,
+                code,
             };
         }
         let mut ents = match self.pipeline.scan_limited(text, self.detect_budget) {
@@ -152,6 +175,7 @@ impl Engine {
                     grammar: false,
                     hit: false,
                     fault: Some(f),
+                    code: None,
                 }
             }
         };
@@ -162,14 +186,16 @@ impl Engine {
             }
         }
         let grammar = aegis_core::pseudo::has_aegis_grammar(text);
+        let code = self.code.as_ref().and_then(|g| g.lookup(text));
         if let Ok(mut c) = self.cache.lock() {
-            c.put(key, (ents.clone(), grammar));
+            c.put(key, (ents.clone(), grammar, code.clone()));
         }
         Scanned {
             entities: ents,
             grammar,
             hit: false,
             fault: None,
+            code,
         }
     }
 
@@ -179,7 +205,7 @@ impl Engine {
 }
 
 /// Entities of a block and whether it contains pseudonym-like text.
-type CachedScan = (Vec<Entity>, bool);
+type CachedScan = (Vec<Entity>, bool, Option<CodeMatch>);
 
 /// Approximate LRU bounded by an estimate of the memory it holds; never persisted (DET-03).
 struct DetectCache {
@@ -270,6 +296,8 @@ pub struct Stats {
     pub rules: Vec<String>,
     /// Blocks whose scan did not finish and were dropped (DET-09).
     pub detector_faults: Vec<&'static str>,
+    /// Blocks that looked like a closed repository: (repository, classification, action).
+    pub code_blocks: Vec<(String, String, &'static str)>,
 }
 
 impl Stats {
@@ -363,6 +391,7 @@ pub fn process_blocks(
             grammar,
             hit,
             fault,
+            code,
         } = engine.scan(&b.text);
         has_grammar.push(grammar);
         if let Some(f) = fault {
@@ -377,6 +406,30 @@ pub fn process_blocks(
             t_scan.elapsed().as_secs_f64() * 1000.0;
         if !hit {
             ctx.stats.blocks_scanned += 1;
+        }
+        if let (Some(m), Some(g)) = (&code, &engine.code) {
+            use crate::code_index::CodeAction;
+            let act = g.action_for(m);
+            ctx.stats.code_blocks.push((
+                m.repo.clone(),
+                m.classification.clone(),
+                match act {
+                    CodeAction::Warn => "warn",
+                    CodeAction::DropBlock => "drop_block",
+                    CodeAction::BlockRequest => "block_request",
+                },
+            ));
+            ctx.stats.rules.push("DET-20".into());
+            match act {
+                CodeAction::Warn => {}
+                CodeAction::DropBlock => dropped[i] = true,
+                CodeAction::BlockRequest => {
+                    return Err(IngressError::Blocked {
+                        rule: format!("DET-20, репозиторий {}", m.repo),
+                        ty: EntityType::Project,
+                    })
+                }
+            }
         }
         let mut keep = vec![];
         for e in ents {

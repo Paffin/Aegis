@@ -29,6 +29,16 @@ pub struct AuditEvent {
     /// DET-09: blocks that were not checked and were dropped (`timeout`, `error`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub detector_faults: Vec<&'static str>,
+    /// DET-20: blocks that looked like a closed repository (names, never code).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub code_blocks: Vec<CodeBlockEvent>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct CodeBlockEvent {
+    pub repo: String,
+    pub classification: String,
+    pub action: &'static str,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -129,6 +139,16 @@ impl AuditEvent {
                 })
                 .collect(),
             detector_faults: ctx.stats.detector_faults.clone(),
+            code_blocks: ctx
+                .stats
+                .code_blocks
+                .iter()
+                .map(|(repo, classification, action)| CodeBlockEvent {
+                    repo: repo.clone(),
+                    classification: classification.clone(),
+                    action,
+                })
+                .collect(),
         }
     }
 }
@@ -264,6 +284,7 @@ mod tests {
             },
             sinks: vec![],
             detector_faults: vec![],
+            code_blocks: vec![],
         }
     }
 

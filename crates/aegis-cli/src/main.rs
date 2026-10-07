@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod index;
 mod scan;
 
 #[derive(Parser)]
@@ -78,6 +79,38 @@ enum Cmd {
     Vkey {
         #[command(subcommand)]
         cmd: VkeyCmd,
+    },
+    /// Fingerprint index of closed source code (DET-20, DET-21). The tenant key is read from
+    /// AEGIS_K_TENANT or AEGIS_K_TENANT_FILE.
+    Index {
+        #[command(subcommand)]
+        cmd: IndexCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum IndexCmd {
+    /// Build an index from repositories: `--repo name=path[:classification]`, repeatable.
+    /// With `--update` the repositories named are replaced in an existing index.
+    Build {
+        #[arg(long = "repo", required = true)]
+        repos: Vec<String>,
+        #[arg(short, long)]
+        out: PathBuf,
+        #[arg(long)]
+        update: bool,
+    },
+    /// Repositories in an index.
+    Info { index: PathBuf },
+    /// Which indexed repository do these files look like? Exit status 1 if any does.
+    Check {
+        index: PathBuf,
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        #[arg(long, default_value_t = 0.8)]
+        threshold: f32,
+        #[arg(long, default_value_t = 80)]
+        min_tokens: usize,
     },
 }
 
@@ -237,6 +270,21 @@ fn now() -> i64 {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
+        Cmd::Index { cmd } => match cmd {
+            IndexCmd::Build { repos, out, update } => index::build(&repos, &out, update),
+            IndexCmd::Info { index } => index::info(&index),
+            IndexCmd::Check {
+                index,
+                paths,
+                threshold,
+                min_tokens,
+            } => {
+                if index::check(&index, &paths, threshold, min_tokens)? {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        },
         Cmd::Scan {
             paths,
             policy,

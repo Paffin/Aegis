@@ -22,6 +22,7 @@
 - `scripts/clients.sh`: настоящие Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue и Cline против Aegis и подставного провайдера (`mock_anthropic.py`, `mock_openai.py`, `mock_gemini.py`); в CI.
 - Имена инструментов других агентов (`exec_command` у Codex, `run_shell_command`, `write_file`, `web_fetch`… у Gemini CLI и Qwen Code, `bash`, `edit`… у OpenCode, `Fetch`, `List` у Continue, `run_commands` со списком команд, `read_files`, `submit_and_exit` у Cline).
 
+- Индекс закрытого кода (`DET-20`, `DET-21`): `aegis index build|info|check`, отпечатки winnowing с ключом тенанта, раздел `code_index` в gateway, действия по классификации репозитория, обновление файла без перезапуска.
 - Вход по токену OpenID Connect (`oidc`): RS256 и ES256 по ключам издателя, группы из утверждений работают в маршрутах (`IAM-04`, `T2-13`).
 - **Этап 2, начало:** `aegis-mcp` — фильтр между агентом и серверами MCP (stdio и Streamable HTTP): белый список инструментов, проверка аргументов, SQL только чтение, удаление полей из результатов, фрагмент политики для меток доверия и выхода наружу (`MCP-01`…`MCP-05`); в политике gateway `trifecta.egress_tools` и шаблоны в `untrusted_tools`. Документ: [docs/MCP.md](docs/MCP.md).
 - Политика решает судьбу вложений и эмбеддингов целиком (`defaults.attachments`, `defaults.embeddings`: `block_request`) (`POL-05`).

@@ -53,6 +53,10 @@ async fn main() {
         .build(&k_t, &k_audit, ProviderKeys::from_env())
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
+    if let Some(g) = &state.engine.load().code {
+        g.watch(Duration::from_secs(30));
+        tracing::info!(repos = g.repos(), "code index loaded");
+    }
     if let Some(o) = &cfg.oidc {
         let http =
             aegis_gateway::server::client_with(Duration::from_secs(5), Duration::from_secs(10));

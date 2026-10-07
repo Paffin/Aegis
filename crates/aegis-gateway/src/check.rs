@@ -231,6 +231,16 @@ pub async fn run(path: &str) -> bool {
         }
         None => {}
     }
+    if let (Some(c), Some(st)) = (&cfg.code_index, &state) {
+        match st.engine.load().code.as_ref() {
+            Some(g) => r.ok(format_args!(
+                "индекс закрытого кода {}: {} репозиториев",
+                c.path,
+                g.repos()
+            )),
+            None => r.fail("индекс закрытого кода не загружен"),
+        }
+    }
     if let Some(o) = &cfg.oidc {
         let http = crate::server::client_with(
             std::time::Duration::from_secs(5),

@@ -370,3 +370,80 @@ fn scan_reports_findings_without_values_and_masks_on_request() {
     // --mask needs exactly one input
     assert!(err(&aegis(&["scan", d.0.to_str().unwrap(), "--mask"])).contains("exactly one"));
 }
+
+// REQ: DET-20, DET-21 — build an index, find a file in it, replace a repository, refuse a wrong key.
+#[test]
+fn code_index_build_check_update() {
+    let d = Dir::new("index");
+    let code = "package payments\n\nfunc (l *Ledger) Post(e Entry) error {\n    if e.Amount > l.limit {\n        return fmt.Errorf(\"limit exceeded: %d\", e.Amount)\n    }\n    for _, old := range l.entries {\n        if old.ID == e.ID {\n            return ErrDuplicate\n        }\n    }\n    l.entries = append(l.entries, e)\n    return nil\n}\n\nfunc (l *Ledger) Balance(account string) int64 {\n    var total int64 = 0\n    for _, e := range l.entries {\n        if e.Account == account {\n            total += e.Amount\n        }\n    }\n    return total\n}\n";
+    std::fs::create_dir_all(format!("{}/repo/src", d.0.display())).unwrap();
+    std::fs::write(format!("{}/repo/src/ledger.go", d.0.display()), code).unwrap();
+    std::fs::write(
+        format!("{}/other.go", d.0.display()),
+        code.replace("    ", "\t"),
+    )
+    .unwrap();
+    std::fs::write(
+        format!("{}/unrelated.rs", d.0.display()),
+        "fn main() { println!(\"hello\"); }\n",
+    )
+    .unwrap();
+    let key = "0123456789abcdef0123456789abcdef";
+    let run = |args: &[&str], k: &str| {
+        Command::new(env!("CARGO_BIN_EXE_aegis"))
+            .args(args)
+            .env("AEGIS_K_TENANT", k)
+            .output()
+            .unwrap()
+    };
+    let idx = d.p("code.idx");
+    let repo = format!("payments={}/repo:closed", d.0.display());
+    let out = ok(&run(&["index", "build", "--repo", &repo, "-o", &idx], key));
+    assert!(
+        out.contains("payments") && out.contains("1 файлов"),
+        "{out}"
+    );
+    // the index holds no code
+    let bytes = std::fs::read(&idx).unwrap();
+    assert!(!bytes.windows(6).any(|w| w == b"Ledger"));
+    // a copy with other spacing is found (exit status 1), unrelated code is not
+    let found = run(
+        &[
+            "index",
+            "check",
+            &idx,
+            &d.p("other.go"),
+            "--min-tokens",
+            "30",
+        ],
+        key,
+    );
+    assert_eq!(found.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&found.stdout).contains("payments (closed)"));
+    assert!(run(
+        &[
+            "index",
+            "check",
+            &idx,
+            &d.p("unrelated.rs"),
+            "--min-tokens",
+            "30"
+        ],
+        key
+    )
+    .status
+    .success());
+    // update replaces the repository instead of adding a second one
+    ok(&run(
+        &["index", "build", "--update", "--repo", &repo, "-o", &idx],
+        key,
+    ));
+    let info = ok(&run(&["index", "info", &idx], key));
+    assert_eq!(info.matches("payments").count(), 1, "{info}");
+    // another tenant key cannot read it
+    let e = String::from_utf8_lossy(
+        &run(&["index", "info", &idx], "ffffffffffffffffffffffffffffffff").stderr,
+    )
+    .to_string();
+    assert!(e.contains("другим ключом"), "{e}");
+}

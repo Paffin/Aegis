@@ -39,7 +39,8 @@ for stage in ("Э0", "Э1"):
     print(f"{stage}: {len(have)}/{len(ids)} requirements have tests")
     if miss and stage == "Э1":
         print("  without tests: " + " ".join(miss))
-unknown = sorted(r for r in covered if r not in reqs)
+known = set(reqs) | set(re.findall(r"^### ([A-Z]{2,4}-\d+)", spec, re.M)) | set(re.findall(r"^\| ([A-Z]{2,4}-\d+) \|", spec, re.M))
+unknown = sorted(r for r in covered if r not in known)
 if unknown:
     print("REQ markers that are not in the spec: " + " ".join(unknown))
     sys.exit(1)

@@ -67,6 +67,7 @@ cat > "$W/gw.json" <<JSON
  "bundle":{"source":"$W/bundle.json","cache_path":"$W/cache.json","trusted_keys":["$PUB"],"reload_seconds":1}}
 JSON
 export AEGIS_K_TENANT=0123456789abcdef0123456789abcdef AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 AEGIS_ANTHROPIC_KEY=pk
+if $BIN/aegis-gateway check "$W/gw.json" > "$W/check.log" 2>&1 && ! grep -q "0123456789abcdef\|fedcba9876543210" "$W/check.log"; then echo "ok   aegis-gateway check passes and prints no key"; else echo "FAIL aegis-gateway check"; cat "$W/check.log"; exit 1; fi
 $BIN/aegis-gateway "$W/gw.json" > "$W/gw.log" 2>&1 &
 GW=$!
 sleep 1.5

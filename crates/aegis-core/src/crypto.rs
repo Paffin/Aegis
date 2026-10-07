@@ -124,9 +124,13 @@ pub fn base32_lower(bytes: &[u8]) -> String {
 
 /// PSE-01: `id = base32lower(HMAC(K_t, "aegis/v1" ‖ salt ‖ type ‖ canon(value)))[0..8]`.
 pub fn pseudonym_id(keys: &TenantKeys, salt: &Salt, ty: &str, canon: &str) -> String {
-    let mac = keys
-        .k_t
-        .mac(&[b"aegis/v1", keys.tenant.as_bytes(), &salt.0, ty.as_bytes(), canon.as_bytes()]);
+    let mac = keys.k_t.mac(&[
+        b"aegis/v1",
+        keys.tenant.as_bytes(),
+        &salt.0,
+        ty.as_bytes(),
+        canon.as_bytes(),
+    ]);
     base32_lower(&mac[..5])
 }
 
@@ -171,7 +175,12 @@ mod tests {
         let k = keys();
         let (s, _) = derive_salt(
             &k,
-            &SaltInput { principal: "u", header: Some("c1"), session_field: None, first_user_message: &[] },
+            &SaltInput {
+                principal: "u",
+                header: Some("c1"),
+                session_field: None,
+                first_user_message: &[],
+            },
         );
         let a = pseudonym_id(&k, &s, "HOST", "prod-db01");
         let b = pseudonym_id(&k, &s, "HOST", "prod-db01");
@@ -186,11 +195,35 @@ mod tests {
     #[test]
     fn salt_anchor_levels() {
         let k = keys();
-        let hdr = derive_salt(&k, &SaltInput { principal: "u", header: Some("c1"), session_field: Some("s"), first_user_message: &["x"] });
+        let hdr = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: Some("c1"),
+                session_field: Some("s"),
+                first_user_message: &["x"],
+            },
+        );
         assert_eq!(hdr.1, AnchorSource::Header);
-        let ses = derive_salt(&k, &SaltInput { principal: "u", header: None, session_field: Some("s"), first_user_message: &["x"] });
+        let ses = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: None,
+                session_field: Some("s"),
+                first_user_message: &["x"],
+            },
+        );
         assert_eq!(ses.1, AnchorSource::SessionField);
-        let first = derive_salt(&k, &SaltInput { principal: "u", header: None, session_field: None, first_user_message: &["x"] });
+        let first = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: None,
+                session_field: None,
+                first_user_message: &["x"],
+            },
+        );
         assert_eq!(first.1, AnchorSource::FirstUserMessage);
     }
 
@@ -199,16 +232,48 @@ mod tests {
     fn first_message_uses_all_blocks() {
         let k = keys();
         let tmpl = "<system-reminder>CLAUDE.md</system-reminder>";
-        let a = derive_salt(&k, &SaltInput { principal: "u", header: None, session_field: None, first_user_message: &[tmpl, "fix bug A"] });
-        let b = derive_salt(&k, &SaltInput { principal: "u", header: None, session_field: None, first_user_message: &[tmpl, "write docs"] });
+        let a = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: None,
+                session_field: None,
+                first_user_message: &[tmpl, "fix bug A"],
+            },
+        );
+        let b = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: None,
+                session_field: None,
+                first_user_message: &[tmpl, "write docs"],
+            },
+        );
         assert_ne!(a.0 .0, b.0 .0);
     }
 
     #[test]
     fn salt_differs_between_principals() {
         let k = keys();
-        let a = derive_salt(&k, &SaltInput { principal: "u1", header: Some("c"), session_field: None, first_user_message: &[] });
-        let b = derive_salt(&k, &SaltInput { principal: "u2", header: Some("c"), session_field: None, first_user_message: &[] });
+        let a = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u1",
+                header: Some("c"),
+                session_field: None,
+                first_user_message: &[],
+            },
+        );
+        let b = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u2",
+                header: Some("c"),
+                session_field: None,
+                first_user_message: &[],
+            },
+        );
         assert_ne!(a.0 .0, b.0 .0);
     }
 
@@ -216,7 +281,15 @@ mod tests {
     #[test]
     fn pan_preserves_prefixes() {
         let k = keys();
-        let (s, _) = derive_salt(&k, &SaltInput { principal: "u", header: Some("c"), session_field: None, first_user_message: &[] });
+        let (s, _) = derive_salt(
+            &k,
+            &SaltInput {
+                principal: "u",
+                header: Some("c"),
+                session_field: None,
+                first_user_message: &[],
+            },
+        );
         let a = pan_bits(&k, &s, b"d", 0x0022_1215, 24); // .34.18.21
         let b = pan_bits(&k, &s, b"d", 0x0022_1216, 24); // .34.18.22: shares 22+ bits
         let c = pan_bits(&k, &s, b"d", 0x0023_0000, 24);

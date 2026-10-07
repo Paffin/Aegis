@@ -15,7 +15,7 @@ hmac = "0.12"
 sha2 = "0.10"
 regex = "1"
 aho-corasick = "1"
-thiserror = "1"
+thiserror = "2"
 zeroize = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "json"] }

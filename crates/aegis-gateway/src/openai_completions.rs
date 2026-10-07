@@ -53,6 +53,7 @@ fn push<'n>(d: &mut Draft<'n>, node: &'n Node, body: &[u8], first: bool) {
         text,
         source: Source::User,
         is_system: false,
+        key: None,
     });
 }
 

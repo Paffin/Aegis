@@ -69,18 +69,26 @@ const SERVER_TOOL_PREFIXES: &[&str] = &[
     "mcp_toolset",
 ];
 
-fn leaves<'n>(node: &'n Node, skip: &[&str], out: &mut Vec<&'n Node>) {
+/// String leaves with the key of the member they are the value of (INV-3: a name like
+/// `db_password` says what the value is; the items of an array have the key of the array).
+type Leaf<'n> = (&'n Node, Option<String>);
+
+fn leaves<'n>(node: &'n Node, skip: &[&str], out: &mut Vec<Leaf<'n>>) {
+    leaves_in(node, skip, None, out)
+}
+
+fn leaves_in<'n>(node: &'n Node, skip: &[&str], key: Option<&str>, out: &mut Vec<Leaf<'n>>) {
     match node {
-        Node::Str { .. } => out.push(node),
+        Node::Str { .. } => out.push((node, key.map(String::from))),
         Node::Obj { members, .. } => {
             for m in members {
                 if skip.contains(&m.key.as_str()) {
                     continue;
                 }
-                leaves(&m.value, skip, out);
+                leaves_in(&m.value, skip, Some(&m.key), out);
             }
         }
-        Node::Arr { items, .. } => items.iter().for_each(|i| leaves(i, skip, out)),
+        Node::Arr { items, .. } => items.iter().for_each(|i| leaves_in(i, skip, key, out)),
         Node::Lit { .. } => {}
     }
 }
@@ -182,6 +190,7 @@ pub fn transform_request(
                 text: s.string(body).unwrap_or_default(),
                 source: Source::User,
                 is_system: true,
+                key: None,
             });
             system_blocked = true;
         }
@@ -195,6 +204,7 @@ pub fn transform_request(
                             text: t.string(body).unwrap_or_default(),
                             source: Source::User,
                             is_system: !done,
+                            key: None,
                         });
                         done = true;
                     }
@@ -229,6 +239,7 @@ pub fn transform_request(
                     text: d.string(body).unwrap_or_default(),
                     source: Source::User,
                     is_system: false,
+                    key: None,
                 });
             }
         }
@@ -251,6 +262,7 @@ pub fn transform_request(
                     text,
                     source: Source::User,
                     is_system: false,
+                    key: None,
                 });
             }
             Node::Arr { items, .. } => {
@@ -287,6 +299,7 @@ pub fn transform_request(
                                     text,
                                     source: Source::User,
                                     is_system: false,
+                                    key: None,
                                 });
                             }
                         }
@@ -294,12 +307,13 @@ pub fn transform_request(
                             if let Some(inp) = b.get("input") {
                                 let mut ls = vec![];
                                 leaves(inp, &[], &mut ls);
-                                for l in ls {
+                                for (l, key) in ls {
                                     blocks.push(Blk {
                                         node: l,
                                         text: l.string(body).unwrap_or_default(),
                                         source: Source::User,
                                         is_system: false,
+                                        key,
                                     });
                                 }
                             }
@@ -323,6 +337,7 @@ pub fn transform_request(
                                     text: c.string(body).unwrap_or_default(),
                                     source: src,
                                     is_system: false,
+                                    key: None,
                                 }),
                                 Some(Node::Arr { items: parts, .. }) => {
                                     for p in parts {
@@ -335,6 +350,7 @@ pub fn transform_request(
                                                 text: t.string(body).unwrap_or_default(),
                                                 source: src.clone(),
                                                 is_system: false,
+                                                key: None,
                                             });
                                         }
                                     }
@@ -346,12 +362,13 @@ pub fn transform_request(
                             // PRO-10: unknown block types: scan their string leaves.
                             let mut ls = vec![];
                             leaves(b, SKIP_KEYS, &mut ls);
-                            for l in ls {
+                            for (l, key) in ls {
                                 blocks.push(Blk {
                                     node: l,
                                     text: l.string(body).unwrap_or_default(),
                                     source: Source::User,
                                     is_system: false,
+                                    key,
                                 });
                             }
                         }
@@ -371,12 +388,13 @@ pub fn transform_request(
     skip.extend(blocks.iter().map(|b| b.node.span().start));
     let mut sw = crate::common::Sweep::default();
     crate::common::sweep(&root, body, &skip, &mut sw);
-    for l in sw.leaves {
+    for (l, key) in sw.leaves {
         blocks.push(Blk {
             node: l,
             text: l.string(body).unwrap_or_default(),
             source: Source::User,
             is_system: false,
+            key,
         });
     }
     crate::common::guard(engine, meta.route, &sw.guarded)

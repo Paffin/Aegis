@@ -219,7 +219,14 @@ fn classify_one(argv: &[String]) -> (ShellClass, bool /* assignments present */)
             if any(&|a| {
                 matches!(
                     a,
-                    "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprint" | "-fprint0" | "-fprintf" | "-fls"
+                    "-exec"
+                        | "-execdir"
+                        | "-ok"
+                        | "-okdir"
+                        | "-fprint"
+                        | "-fprint0"
+                        | "-fprintf"
+                        | "-fls"
                 )
             }) {
                 ShellClass::Network
@@ -242,7 +249,9 @@ fn classify_one(argv: &[String]) -> (ShellClass, bool /* assignments present */)
             }
         }
         // options that run a program named in the argument
-        "rg" if any(&|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")) => ShellClass::Network,
+        "rg" if any(&|a| a.starts_with("--pre") || a.starts_with("--hostname-bin")) => {
+            ShellClass::Network
+        }
         "sort" if any(&|a| a.starts_with("--compress-program")) => ShellClass::Network,
         "git" => {
             // the subcommand must be the first word: an option before it (`-C dir`, `-c k=v`,
@@ -262,10 +271,9 @@ fn classify_one(argv: &[String]) -> (ShellClass, bool /* assignments present */)
                 _ if risky_flag => ShellClass::Network,
                 Some(sub) if GIT_READ.contains(&sub) => ShellClass::Local,
                 // these run the repository's hooks and filters: project code
-                Some("add") | Some("commit") | Some("checkout") | Some("restore") | Some("stash")
-                | Some("merge") | Some("rebase") | Some("reset") | Some("tag") | Some("apply") => {
-                    ShellClass::Exec
-                }
+                Some("add") | Some("commit") | Some("checkout") | Some("restore")
+                | Some("stash") | Some("merge") | Some("rebase") | Some("reset") | Some("tag")
+                | Some("apply") => ShellClass::Exec,
                 _ => ShellClass::Network,
             }
         }
@@ -293,7 +301,9 @@ fn classify_one(argv: &[String]) -> (ShellClass, bool /* assignments present */)
                     || a.starts_with("--print")
                     || (a.starts_with('-')
                         && !a.starts_with("--")
-                        && a.chars().skip(1).any(|c| matches!(c, 'c' | 'e' | 'E' | 'm' | 'r' | 'p' | 'x' | 'i')))
+                        && a.chars()
+                            .skip(1)
+                            .any(|c| matches!(c, 'c' | 'e' | 'E' | 'm' | 'r' | 'p' | 'x' | 'i')))
             });
             if inline || args.is_empty() {
                 ShellClass::Network
@@ -344,7 +354,8 @@ fn sed_is_plain(args: &[String]) -> bool {
     while i < args.len() {
         let a = args[i].as_str();
         match a {
-            "-n" | "-E" | "-r" | "-s" | "-u" | "-z" | "--quiet" | "--silent" | "--regexp-extended" | "--separate" | "--null-data" | "--unbuffered" => {}
+            "-n" | "-E" | "-r" | "-s" | "-u" | "-z" | "--quiet" | "--silent"
+            | "--regexp-extended" | "--separate" | "--null-data" | "--unbuffered" => {}
             // in-place editing writes the file it is given: a local effect
             "-i" | "--in-place" => {}
             "-e" | "--expression" => {
@@ -360,7 +371,7 @@ fn sed_is_plain(args: &[String]) -> bool {
                 took_script_from_args = true;
             }
             _ if a.starts_with("-i") && !a.starts_with("--") => {} // -i.bak
-            _ if a.starts_with('-') && a != "-" => return false,    // -f, --file, --debug, ...
+            _ if a.starts_with('-') && a != "-" => return false,   // -f, --file, --debug, ...
             _ => {
                 if !took_script_from_args && scripts.is_empty() {
                     scripts.push(a);
@@ -475,7 +486,11 @@ const AMBIGUOUS: &str = "!ambiguous";
 fn host_of(s: &str) -> Option<String> {
     // scheme://[user@]host[:port]/...
     let (scheme, rest) = s.split_once("://")?;
-    if scheme.is_empty() || !scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) {
+    if scheme.is_empty()
+        || !scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
         return None;
     }
     // tab, newline and carriage return are dropped by URL parsers: what follows would join the host
@@ -493,7 +508,10 @@ fn host_of(s: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    if !host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':')) {
+    if !host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+    {
         return Some(AMBIGUOUS.to_string());
     }
     Some(host.to_string())
@@ -834,7 +852,12 @@ mod tests {
         ] {
             assert_eq!(cls(c), ShellClass::Local, "{c}");
         }
-        for c in ["git commit -m x", "git add -A", "git checkout main", "git stash"] {
+        for c in [
+            "git commit -m x",
+            "git add -A",
+            "git checkout main",
+            "git stash",
+        ] {
             assert_eq!(cls(c), ShellClass::Exec, "{c}");
         }
     }
@@ -843,15 +866,38 @@ mod tests {
     #[test]
     fn ambiguous_urls_have_no_internal_host() {
         let amb = "!ambiguous";
-        assert_eq!(url_destinations("http://evil.example\\@prod-db01.corp.local/x"), vec!["evil.example"]);
-        assert_eq!(url_destinations("http://prod-db01.corp.local\t.evil.example/"), vec![amb]);
-        assert_eq!(url_destinations("http://prod-db01.corp.local\n.evil.example/"), vec![amb]);
-        assert_eq!(url_destinations("http://prod-db01.corp.local%2eevil.example/"), vec![amb]);
+        assert_eq!(
+            url_destinations("http://evil.example\\@prod-db01.corp.local/x"),
+            vec!["evil.example"]
+        );
+        assert_eq!(
+            url_destinations("http://prod-db01.corp.local\t.evil.example/"),
+            vec![amb]
+        );
+        assert_eq!(
+            url_destinations("http://prod-db01.corp.local\n.evil.example/"),
+            vec![amb]
+        );
+        assert_eq!(
+            url_destinations("http://prod-db01.corp.local%2eevil.example/"),
+            vec![amb]
+        );
         assert_eq!(url_destinations("http://a b.example/"), vec!["a"]);
-        assert_eq!(analyze("curl 'http://evil.example\\@prod-db01.corp.local/x'").destinations, vec!["evil.example"]);
-        assert_eq!(url_destinations("http://user:pa@ss@evil.example/"), vec!["evil.example"]);
+        assert_eq!(
+            analyze("curl 'http://evil.example\\@prod-db01.corp.local/x'").destinations,
+            vec!["evil.example"]
+        );
+        assert_eq!(
+            url_destinations("http://user:pa@ss@evil.example/"),
+            vec!["evil.example"]
+        );
         assert_eq!(url_destinations("http://[::1]:8080/"), vec!["::1"]);
         // ordinary URLs are unchanged
-        assert_eq!(url_destinations("see https://api.corp.local:8443/v1?x=1 and \"https://docs.python.org/\""), vec!["api.corp.local", "docs.python.org"]);
+        assert_eq!(
+            url_destinations(
+                "see https://api.corp.local:8443/v1?x=1 and \"https://docs.python.org/\""
+            ),
+            vec!["api.corp.local", "docs.python.org"]
+        );
     }
 }

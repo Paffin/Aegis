@@ -272,3 +272,12 @@ fn a_typo_in_the_configuration_is_an_error() {
     }
     assert!(serde_json::from_str::<ServerConfig>(r#"{"audit_required": true}"#).is_ok());
 }
+
+#[tokio::test]
+async fn a_value_in_the_gemini_model_name_is_not_sent_to_the_provider() {
+    let (up, seen) = recorder().await;
+    let gw = gateway_with(up, |_| {}).await;
+    let r = raw(&gw, "POST /v1beta/models/AKIAJ3KQ7P2WXNB5ZT4A:generateContent HTTP/1.1\r\nHost: x\r\nx-goog-api-key: vk\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}", Duration::from_secs(3)).await;
+    assert_eq!(status_of(&r), "400", "{r}");
+    assert!(seen.lock().unwrap().is_empty());
+}

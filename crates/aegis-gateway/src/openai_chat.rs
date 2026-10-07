@@ -77,6 +77,7 @@ impl<'n> Collect<'n> {
             text,
             source,
             is_system,
+            key: None,
         });
         self.owner.push(owner);
     }
@@ -304,7 +305,7 @@ pub fn transform_request(
     for n in &nested {
         crate::common::nested_keys(&n.root, &mut sw.guarded);
     }
-    for l in sw.leaves {
+    for (l, key) in sw.leaves {
         col.push(
             l,
             l.string(body).unwrap_or_default(),
@@ -312,6 +313,9 @@ pub fn transform_request(
             false,
             None,
         );
+        if let Some(b) = col.blocks.last_mut() {
+            b.key = key;
+        }
     }
     crate::common::guard(engine, meta.route, &sw.guarded)
         .map_err(|e| blocked(e, meta.request_id))?;

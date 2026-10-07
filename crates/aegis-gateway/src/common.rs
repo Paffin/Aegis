@@ -25,7 +25,9 @@ fn reason_text(reason: &str) -> &'static str {
         "trifecta" => "в контексте одновременно приватные данные и недоверенный контент",
         "malformed" => "аргументы вызова не удалось разобрать",
         "dangerous" => "опасная команда",
-        "conflict" => "вызов называет два разных файла или две разные команды: непонятно, что он делает",
+        "conflict" => {
+            "вызов называет два разных файла или две разные команды: непонятно, что он делает"
+        }
         "response_secret" => "в аргументах вызова секрет, которого модели не передавали",
         _ => "запрещено политикой",
     }
@@ -105,10 +107,19 @@ pub fn tool_path(input: &Value) -> Option<String> {
 
 /// Keys that name the file a call acts on. A call that names two different files in these is
 /// refused: Aegis would judge one and the client act on the other.
-const PATH_KEYS: &[&str] = &["file_path", "filePath", "path", "absolute_path", "target_file", "notebook_path"];
+const PATH_KEYS: &[&str] = &[
+    "file_path",
+    "filePath",
+    "path",
+    "absolute_path",
+    "target_file",
+    "notebook_path",
+];
 
 pub fn path_conflict(input: &Value) -> bool {
-    let Some(o) = input.as_object() else { return false };
+    let Some(o) = input.as_object() else {
+        return false;
+    };
     let mut seen: Vec<&str> = vec![];
     for k in PATH_KEYS {
         if let Some(Value::String(s)) = o.get(*k) {
@@ -122,8 +133,13 @@ pub fn path_conflict(input: &Value) -> bool {
 
 /// Two command fields with different content: the same ambiguity for shell tools.
 fn command_conflict(input: &Value) -> bool {
-    let Some(o) = input.as_object() else { return false };
-    let present: Vec<&Value> = ["command", "cmd", "commands"].iter().filter_map(|k| o.get(*k)).collect();
+    let Some(o) = input.as_object() else {
+        return false;
+    };
+    let present: Vec<&Value> = ["command", "cmd", "commands"]
+        .iter()
+        .filter_map(|k| o.get(*k))
+        .collect();
     present.len() > 1 && present.windows(2).any(|w| w[0] != w[1])
 }
 
@@ -562,6 +578,7 @@ mod tests {
                 path: tool_path.map(String::from),
             },
             is_system: false,
+            key: None,
         };
         let _ = process_blocks(e, &mut ctx, &[blk]);
         ctx
@@ -706,7 +723,8 @@ const GUARD_MIN_LEN: usize = 8;
 /// identifier-like strings that must stay intact but may not carry a secret.
 #[derive(Default)]
 pub struct Sweep<'n> {
-    pub leaves: Vec<&'n crate::json::Node>,
+    /// (string, key of its member): the key tells what a value is.
+    pub leaves: Vec<(&'n crate::json::Node, Option<String>)>,
     pub guarded: Vec<String>,
 }
 
@@ -739,7 +757,7 @@ fn walk<'n>(
                     out.guarded.push(s);
                 }
             } else {
-                out.leaves.push(node);
+                out.leaves.push((node, key.map(String::from)));
             }
         }
         Node::Obj { members, .. } => {
@@ -748,7 +766,7 @@ fn walk<'n>(
                 walk(&m.value, body, skip, out, Some(&m.key));
             }
         }
-        Node::Arr { items, .. } => items.iter().for_each(|i| walk(i, body, skip, out, None)),
+        Node::Arr { items, .. } => items.iter().for_each(|i| walk(i, body, skip, out, key)),
         // A long number can be a card or an account number; it cannot be replaced by a marker
         // without changing its type, so it is guarded rather than masked.
         Node::Lit { span } => {
@@ -855,12 +873,13 @@ pub fn finish_request<'n>(
     skip.extend(d.blocks.iter().map(|b| b.node.span().start));
     let mut sw = Sweep::default();
     sweep(root, body, &skip, &mut sw);
-    for l in sw.leaves {
+    for (l, key) in sw.leaves {
         d.blocks.push(Blk {
             node: l,
             text: l.string(body).unwrap_or_default(),
             source: Source::User,
             is_system: false,
+            key,
         });
     }
     guard(engine, meta.route, &sw.guarded).map_err(|e| blocked(e, meta.request_id))?;

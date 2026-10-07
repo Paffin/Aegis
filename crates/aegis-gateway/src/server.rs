@@ -999,6 +999,8 @@ async fn gemini_model(
         || model == ".."
         || !(path.starts_with("/v1beta/models/") || path.starts_with("/v1/models/"))
         || path.matches('/').count() != 3
+        // a value put in the model name would go to the provider in the URL
+        || !st.engine.load().scan(model).entities.is_empty()
     {
         return err_response_for(
             Protocol::Gemini,

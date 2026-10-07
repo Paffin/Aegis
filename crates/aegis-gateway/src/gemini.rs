@@ -5,9 +5,7 @@
 //! whatever the adapter does not recognise is scanned anyway (default deny).
 
 use crate::anthropic::{Reject, ReqMeta};
-use crate::common::{
-    bad_request, finish_request, restore_arguments, restore_text, Draft,
-};
+use crate::common::{bad_request, finish_request, restore_arguments, restore_text, Draft};
 use crate::engine::{Blk, Engine, RequestCtx, ATTACHMENT_NOTICE, NOTICE};
 use crate::json::{self, Node};
 use crate::stream::{safe_prefix_len, SseParser};
@@ -90,6 +88,7 @@ pub fn transform_request(
                 text: s.string(body).unwrap_or_default(),
                 source: Source::User,
                 is_system: true,
+                key: None,
             });
             system_done = true;
         }
@@ -101,6 +100,7 @@ pub fn transform_request(
                         text: tx.string(body).unwrap_or_default(),
                         source: Source::User,
                         is_system: !system_done,
+                        key: None,
                     });
                     system_done = true;
                 }
@@ -183,6 +183,7 @@ pub fn transform_request(
                     text,
                     source: Source::User,
                     is_system: false,
+                    key: None,
                 });
             }
             if let Some(args) = get2(p, "functionCall", "function_call").and_then(|f| f.get("args"))
@@ -195,6 +196,7 @@ pub fn transform_request(
                         text: l.string(body).unwrap_or_default(),
                         source: Source::User,
                         is_system: false,
+                        key: None,
                     });
                 }
             }
@@ -224,6 +226,7 @@ pub fn transform_request(
                                 path: path.clone(),
                             },
                             is_system: false,
+                            key: None,
                         });
                     }
                 }

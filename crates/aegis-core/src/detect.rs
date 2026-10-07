@@ -239,7 +239,35 @@ pub struct SecretDetector {
 }
 
 /// English and Russian keywords that mark the following value as a secret.
-const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|secret|token|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
+const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|pass(?:[_\-]|\b)|secret|token|credentials?|creds?\b|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
+
+/// Does the name of a JSON member say that its value is a secret (`db_password`, `REDIS_PASS`,
+/// `credentials`, `apiToken`)? Then the value is scanned with its name in front of it, as a line
+/// `name: value`, so that the detectors that need the name see it.
+pub fn secretish_key(key: &str) -> bool {
+    let k = key.to_lowercase();
+    [
+        "pass",
+        "pwd",
+        "secret",
+        "token",
+        "credential",
+        "cred",
+        "apikey",
+        "api_key",
+        "api-key",
+        "access_key",
+        "access-key",
+        "private_key",
+        "private-key",
+        "auth",
+        "парол",
+        "токен",
+        "секрет",
+    ]
+    .iter()
+    .any(|w| k.contains(w))
+}
 
 /// An Aegis pseudonym (`[[TYPE_id ...`) is already masked: it is not a value to mask again
 /// (a model's earlier answer that echoes `password: [[SECRET_...]]` comes back in the history).

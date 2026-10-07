@@ -482,7 +482,11 @@ fn is_url_like(w: &str) -> bool {
     let mut from = 0;
     while let Some(i) = w[from..].find("://") {
         let at = from + i;
-        let run: String = w[..at].chars().rev().take_while(|c| is_scheme_char(*c)).collect();
+        let run: String = w[..at]
+            .chars()
+            .rev()
+            .take_while(|c| is_scheme_char(*c))
+            .collect();
         // (`jdbc:postgresql://host` is a connection string, not a link: the scheme is preceded by `:`)
         let before = w[..at - run.len()].chars().next_back();
         if run.chars().last().is_some_and(|c| c.is_ascii_alphabetic()) && before != Some(':') {
@@ -494,7 +498,10 @@ fn is_url_like(w: &str) -> bool {
         let mut from = 0;
         while let Some(i) = w[from..].find(sch) {
             let at = from + i;
-            let before_ok = w[..at].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+            let before_ok = w[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
             let after = w[at + sch.len()..].chars().next();
             if before_ok && after.is_some_and(|c| !c.is_whitespace()) {
                 return true;

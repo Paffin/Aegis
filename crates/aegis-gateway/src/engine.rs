@@ -338,6 +338,9 @@ pub struct Blk<'n> {
     pub source: Source,
     /// Prepend the Aegis notice to this block (system prompt).
     pub is_system: bool,
+    /// The key of the JSON member this string is the value of, when the adapter knows it: a
+    /// name like `db_password` tells what the value is (INV-3).
+    pub key: Option<String>,
 }
 
 fn record_entity(
@@ -370,6 +373,34 @@ pub enum IngressError {
     Blocked { rule: String, ty: EntityType },
 }
 
+/// The entities of `text` found when it is read as the value of the member `key`.
+fn with_key_context(engine: &Engine, key: &str, text: &str, mut ents: Vec<Entity>) -> Vec<Entity> {
+    if !aegis_core::detect::secretish_key(key) {
+        return ents;
+    }
+    let prefix = format!("{key}: ");
+    let n = prefix.len();
+    let keyed = engine.scan(&format!("{prefix}{text}"));
+    if keyed.fault.is_some() {
+        return ents;
+    }
+    for e in keyed.entities {
+        if e.span.start < n {
+            continue;
+        }
+        let mut e = e;
+        e.span = aegis_core::types::Span {
+            start: e.span.start - n,
+            end: e.span.end - n,
+        };
+        if ents.iter().all(|x| !x.span.overlaps(&e.span)) {
+            ents.push(e);
+        }
+    }
+    ents.sort_by_key(|e| e.span.start);
+    ents
+}
+
 /// Phase 1 + 2 over all blocks of a request (INV-1: a block's output depends only on itself,
 /// except for the own-marker escape rule of PSE-11).
 pub fn process_blocks(
@@ -397,6 +428,12 @@ pub fn process_blocks(
             code,
         } = engine.scan(&b.text);
         has_grammar.push(grammar);
+        // INV-3: a value found under a name like `db_password` is a password even when the
+        // string alone says nothing
+        let ents = match &b.key {
+            Some(k) if fault.is_none() => with_key_context(engine, k, &b.text, ents),
+            _ => ents,
+        };
         if let Some(f) = fault {
             // DET-09: the block was not checked, so it does not go out; the request does
             ctx.stats.detector_faults.push(f.as_str());

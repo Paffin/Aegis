@@ -4,7 +4,7 @@
 //! leaf, never as raw text, so escapes cannot be cut by a replacement.
 
 use crate::anthropic::{Reject, ReqMeta};
-use crate::common::{denial_text, malformed, restore_text, restore_tool_call};
+use crate::common::{restore_arguments, restore_text};
 use crate::engine::{
     process_blocks, Blk, Engine, IngressError, RequestCtx, Stats, ATTACHMENT_NOTICE, NOTICE,
 };
@@ -329,32 +329,6 @@ pub fn transform_request(
 // ---------------------------------------------------------------------------
 // Response, non-streaming
 // ---------------------------------------------------------------------------
-
-/// Restore one `function.arguments` string; `Err` carries the replacement text.
-fn restore_arguments(
-    engine: &Engine,
-    ctx: &mut RequestCtx,
-    name: &str,
-    args: &str,
-) -> Result<String, String> {
-    let mut input: Value = if args.trim().is_empty() {
-        json!({})
-    } else {
-        serde_json::from_str(args).unwrap_or(Value::Null)
-    };
-    if input.is_null() {
-        ctx.stats.denied += 1;
-        return Err(denial_text(
-            name,
-            &malformed(aegis_core::policy::Sink::Unknown),
-            &ctx.request_id,
-        ));
-    }
-    match restore_tool_call(engine, ctx, name, &mut input) {
-        Ok(()) => Ok(serde_json::to_string(&input).unwrap_or_default()),
-        Err(d) => Err(denial_text(name, &d, &ctx.request_id)),
-    }
-}
 
 pub fn transform_response(engine: &Engine, ctx: &mut RequestCtx, body: &[u8]) -> Vec<u8> {
     let Ok(mut v) = serde_json::from_slice::<Value>(body) else {

@@ -8,6 +8,7 @@ use crate::audit::{Audit, AuditEvent, EventMeta};
 use crate::engine::Engine;
 use crate::metrics::Metrics;
 use crate::openai_chat::{self, ChatStreamTransformer};
+use crate::openai_responses::{self, ResponsesStreamTransformer};
 use crate::stream::StreamTransformer;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, State};
@@ -101,7 +102,7 @@ fn client_key(h: &HeaderMap) -> Option<String> {
 }
 
 fn err_response_for(p: Protocol, status: u16, kind: &'static str, message: &str) -> Response {
-    if p == Protocol::OpenAiChat {
+    if p != Protocol::Anthropic {
         let body = crate::anthropic::Reject {
             status,
             kind,
@@ -132,6 +133,7 @@ fn err_response(status: u16, kind: &'static str, message: &str) -> Response {
 pub enum Protocol {
     Anthropic,
     OpenAiChat,
+    OpenAiResponses,
 }
 
 impl Protocol {
@@ -139,12 +141,14 @@ impl Protocol {
         match self {
             Protocol::Anthropic => "/v1/messages",
             Protocol::OpenAiChat => "/v1/chat/completions",
+            Protocol::OpenAiResponses => "/v1/responses",
         }
     }
     fn route(&self) -> &'static str {
         match self {
             Protocol::Anthropic => "anthropic-default",
             Protocol::OpenAiChat => "openai-chat-default",
+            Protocol::OpenAiResponses => "openai-responses-default",
         }
     }
 }
@@ -152,6 +156,7 @@ impl Protocol {
 enum AnyStream<'e> {
     A(Box<StreamTransformer<'e>>),
     C(Box<ChatStreamTransformer<'e>>),
+    R(Box<ResponsesStreamTransformer<'e>>),
 }
 
 impl AnyStream<'_> {
@@ -159,18 +164,21 @@ impl AnyStream<'_> {
         match self {
             AnyStream::A(t) => t.feed(b),
             AnyStream::C(t) => t.feed(b),
+            AnyStream::R(t) => t.feed(b),
         }
     }
     fn finish(&mut self) -> Vec<u8> {
         match self {
             AnyStream::A(t) => t.finish(),
             AnyStream::C(t) => t.finish(),
+            AnyStream::R(t) => t.finish(),
         }
     }
     fn ctx(&self) -> &crate::engine::RequestCtx {
         match self {
             AnyStream::A(t) => &t.ctx,
             AnyStream::C(t) => &t.ctx,
+            AnyStream::R(t) => &t.ctx,
         }
     }
 }
@@ -179,6 +187,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/messages", any(messages))
         .route("/v1/chat/completions", any(chat_completions))
+        .route("/v1/responses", any(responses))
         .route("/v1/messages/count_tokens", any(count_tokens))
         .route("/v1/models", get(models))
         .fallback(not_found)
@@ -344,6 +353,15 @@ async fn messages(
     proxy(st, Protocol::Anthropic, method, headers, body).await
 }
 
+async fn responses(
+    State(st): State<Arc<AppState>>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    proxy(st, Protocol::OpenAiResponses, method, headers, body).await
+}
+
 async fn chat_completions(
     State(st): State<Arc<AppState>>,
     method: Method,
@@ -356,7 +374,7 @@ async fn chat_completions(
 fn upstream_for(st: &AppState, p: Protocol) -> Option<&Upstream> {
     match p {
         Protocol::Anthropic => Some(&st.upstream),
-        Protocol::OpenAiChat => st.openai.as_ref(),
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => st.openai.as_ref(),
     }
 }
 
@@ -370,7 +388,9 @@ fn provider_headers(h: &HeaderMap, p: Protocol, up: &Upstream) -> reqwest::heade
             "accept",
             "user-agent",
         ],
-        Protocol::OpenAiChat => &["openai-beta", "content-type", "accept", "user-agent"],
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
+            &["openai-beta", "content-type", "accept", "user-agent"]
+        }
     };
     for name in allow {
         if let Some(v) = h.get(*name) {
@@ -389,7 +409,7 @@ fn provider_headers(h: &HeaderMap, p: Protocol, up: &Upstream) -> reqwest::heade
                 out.insert("x-api-key", v);
             }
         }
-        Protocol::OpenAiChat => {
+        Protocol::OpenAiChat | Protocol::OpenAiResponses => {
             if let Ok(v) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", up.api_key))
             {
                 out.insert(reqwest::header::AUTHORIZATION, v);
@@ -479,6 +499,7 @@ async fn proxy(
     let transformed = match proto {
         Protocol::Anthropic => transform_request(&st.engine, &meta, &body),
         Protocol::OpenAiChat => openai_chat::transform_request(&st.engine, &meta, &body),
+        Protocol::OpenAiResponses => openai_responses::transform_request(&st.engine, &meta, &body),
     };
     let (new_body, ctx) = match transformed {
         Ok(x) => x,
@@ -545,6 +566,9 @@ async fn proxy(
                 Protocol::OpenAiChat => {
                     AnyStream::C(Box::new(ChatStreamTransformer::new(&st2.engine, ctx)))
                 }
+                Protocol::OpenAiResponses => {
+                    AnyStream::R(Box::new(ResponsesStreamTransformer::new(&st2.engine, ctx)))
+                }
             };
             let mut s = up.bytes_stream();
             while let Some(chunk) = s.next().await {
@@ -585,6 +609,9 @@ async fn proxy(
         match proto {
             Protocol::Anthropic => transform_response(&st.engine, &mut ctx, &bytes),
             Protocol::OpenAiChat => openai_chat::transform_response(&st.engine, &mut ctx, &bytes),
+            Protocol::OpenAiResponses => {
+                openai_responses::transform_response(&st.engine, &mut ctx, &bytes)
+            }
         }
     } else {
         bytes.to_vec()

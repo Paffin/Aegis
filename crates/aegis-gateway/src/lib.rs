@@ -9,5 +9,6 @@ pub mod engine;
 pub mod json;
 pub mod metrics;
 pub mod openai_chat;
+pub mod openai_responses;
 pub mod server;
 pub mod stream;

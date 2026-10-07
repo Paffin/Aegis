@@ -4,7 +4,7 @@
 use crate::engine::{Engine, RequestCtx, SinkAudit};
 use aegis_core::policy::{is_shell_tool, Sink};
 use aegis_core::restore::{restore, sink_for_command, SinkContext};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug)]
 pub struct Denied {
@@ -289,6 +289,32 @@ pub fn restore_tool_call(
             });
             Ok(())
         }
+    }
+}
+
+/// Restore one `function.arguments` string; `Err` carries the replacement text.
+pub fn restore_arguments(
+    engine: &Engine,
+    ctx: &mut RequestCtx,
+    name: &str,
+    args: &str,
+) -> Result<String, String> {
+    let mut input: Value = if args.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(args).unwrap_or(Value::Null)
+    };
+    if input.is_null() {
+        ctx.stats.denied += 1;
+        return Err(denial_text(
+            name,
+            &malformed(Sink::Unknown),
+            &ctx.request_id,
+        ));
+    }
+    match restore_tool_call(engine, ctx, name, &mut input) {
+        Ok(()) => Ok(serde_json::to_string(&input).unwrap_or_default()),
+        Err(d) => Err(denial_text(name, &d, &ctx.request_id)),
     }
 }
 

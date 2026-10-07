@@ -71,6 +71,15 @@ fn normalize_path(p: &str) -> &str {
 }
 
 fn is_internal(cfg: &DetectConfig, host: &str) -> bool {
+    // a host that is not a plain name or address (the marker of an ambiguous URL included) is
+    // not judged internal: when the reading is in doubt, it is not
+    if host.is_empty()
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':'))
+    {
+        return false;
+    }
     cfg.is_internal_host(host)
         || host.eq_ignore_ascii_case("localhost")
         || parse_ipv4(host).is_some_and(|ip| cfg.is_private_ipv4(ip))
@@ -227,6 +236,7 @@ pub fn restore(
                 cur = t.end;
             }
             cand.push_str(&text[cur..ue]);
+            let mut cand = normalize_url_word(&cand);
             if cand.starts_with("//") {
                 cand.insert_str(0, "https:");
             }
@@ -388,22 +398,65 @@ fn url_span(text: &str, toks: &[(usize, usize)], i: usize) -> Option<(usize, usi
             _ => break,
         }
     }
-    let url = &text[start..end];
-    // `//host/path` is a URL for a browser (protocol-relative image or link)
-    if url.starts_with("//") && !url.starts_with("///") {
-        return Some((start, end));
+    is_url_like(&normalize_url_word(&text[start..end])).then_some((start, end))
+}
+
+/// A word as a browser or a Markdown renderer reads it: character references that stand for `:`,
+/// `/` and `\` decoded, `\` taken as `/` (as for web schemes), case folded.
+fn normalize_url_word(w: &str) -> String {
+    let mut s = w.to_lowercase();
+    for (from, to) in [
+        ("&#58;", ":"),
+        ("&#x3a;", ":"),
+        ("&colon;", ":"),
+        ("&#47;", "/"),
+        ("&#x2f;", "/"),
+        ("&sol;", "/"),
+        ("&#92;", "/"),
+        ("&#x5c;", "/"),
+        ("&bsol;", "/"),
+        ("\\", "/"),
+    ] {
+        s = s.replace(from, to);
     }
-    let scheme_end = url.find("://")?;
-    let scheme = &url[..scheme_end];
-    (!scheme.is_empty()
-        && scheme
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic())
-        && scheme
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')))
-    .then_some((start, end))
+    s
+}
+
+/// Does this word contain a URL that a browser would follow to another host: `scheme://…`,
+/// `//host`, `=//host` (an unquoted attribute), or a web scheme directly followed by the host
+/// (`https:host`, which browsers read as `https://host`)?
+fn is_url_like(w: &str) -> bool {
+    if w.starts_with("//") {
+        return true;
+    }
+    if w.contains("=//") {
+        return true;
+    }
+    let is_scheme_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-');
+    let mut from = 0;
+    while let Some(i) = w[from..].find("://") {
+        let at = from + i;
+        let run: String = w[..at].chars().rev().take_while(|c| is_scheme_char(*c)).collect();
+        // (`jdbc:postgresql://host` is a connection string, not a link: the scheme is preceded by `:`)
+        let before = w[..at - run.len()].chars().next_back();
+        if run.chars().last().is_some_and(|c| c.is_ascii_alphabetic()) && before != Some(':') {
+            return true;
+        }
+        from = at + 3;
+    }
+    for sch in ["http:", "https:", "ftp:", "ws:", "wss:"] {
+        let mut from = 0;
+        while let Some(i) = w[from..].find(sch) {
+            let at = from + i;
+            let before_ok = w[..at].chars().next_back().is_none_or(|c| !c.is_ascii_alphanumeric());
+            let after = w[at + sch.len()..].chars().next();
+            if before_ok && after.is_some_and(|c| !c.is_whitespace()) {
+                return true;
+            }
+            from = at + sch.len();
+        }
+    }
+    false
 }
 
 /// Choose the shell sink for a command (RST-07).

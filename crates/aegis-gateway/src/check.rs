@@ -88,6 +88,13 @@ pub async fn run(path: &str) -> bool {
         }
     }
 
+    // a key file that others can read is not a protected key (CFG-07)
+    for name in ["AEGIS_K_TENANT", "AEGIS_K_AUDIT"] {
+        if let Some(p) = aegis_core::secrets::file_mode_problem(name) {
+            r.fail(format_args!("{name}_FILE: {p}"));
+        }
+    }
+
     // providers and their keys (IAM-02)
     let (kt, ka) = (
         k_t.as_ref().ok().cloned().unwrap_or_else(|| vec![0; 32]),

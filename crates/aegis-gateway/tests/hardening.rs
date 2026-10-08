@@ -350,3 +350,65 @@ async fn connections_per_address_are_limited() {
     assert_eq!(status_of(&r), "200", "{r}");
     drop(b);
 }
+
+// REQ: CFG-05, CFG-07 — the real binary takes its keys from a program (a vault, KMS or HSM client), and
+// `check` reports a key file that others can read.
+#[cfg(unix)]
+#[test]
+fn keys_from_a_command_and_the_mode_of_a_key_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("aegis-keys-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("gw.json");
+    std::fs::write(&cfg, format!(r#"{{"listen":"127.0.0.1:0","admin_listen":"127.0.0.1:0","anthropic_base_url":"http://127.0.0.1:1","virtual_keys":[{{"sha256":"{}","principal":"u:x"}}]}}"#, "ab".repeat(32))).unwrap();
+    let bin = env!("CARGO_BIN_EXE_aegis-gateway");
+    let check = |envs: &[(&str, &str)]| {
+        let mut c = std::process::Command::new(bin);
+        c.arg("check")
+            .arg(&cfg)
+            .env_clear()
+            .env("AEGIS_ANTHROPIC_KEY", "provider-key")
+            .env("PATH", std::env::var("PATH").unwrap());
+        for (k, v) in envs {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr),
+        )
+    };
+    // both keys from commands: nothing in the environment or on disk
+    let (ok, out) = check(&[
+        (
+            "AEGIS_K_TENANT_COMMAND",
+            "printf 'tenant-key-0123456789abc'",
+        ),
+        ("AEGIS_K_AUDIT_COMMAND", "printf 'audit-key-0123456789abcd'"),
+    ]);
+    assert!(ok, "{out}");
+    // a command that fails is a missing key, and its error output does not appear
+    let (ok, out) = check(&[
+        (
+            "AEGIS_K_TENANT_COMMAND",
+            "sh -c 'echo LEAKED-IN-STDERR >&2; exit 1'",
+        ),
+        ("AEGIS_K_AUDIT_COMMAND", "printf 'audit-key-0123456789abcd'"),
+    ]);
+    assert!(!ok && !out.contains("LEAKED-IN-STDERR"), "{out}");
+    // a key file open to others
+    let f = dir.join("tenant.key");
+    std::fs::write(&f, "tenant-key-0123456789abc").unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (ok, out) = check(&[
+        ("AEGIS_K_TENANT_FILE", f.to_str().unwrap()),
+        ("AEGIS_K_AUDIT_COMMAND", "printf 'audit-key-0123456789abcd'"),
+    ]);
+    assert!(!ok && out.contains("644"), "{out}");
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o400)).unwrap();
+    let (ok, out) = check(&[
+        ("AEGIS_K_TENANT_FILE", f.to_str().unwrap()),
+        ("AEGIS_K_AUDIT_COMMAND", "printf 'audit-key-0123456789abcd'"),
+    ]);
+    assert!(ok, "{out}");
+}

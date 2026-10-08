@@ -14,6 +14,7 @@ pub mod policy;
 pub mod policytest;
 pub mod pseudo;
 pub mod restore;
+pub mod secrets;
 pub mod sensitive;
 pub mod shell;
 pub mod types;

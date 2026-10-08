@@ -269,25 +269,15 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// Read a secret from `NAME` or from the file named by `NAME_FILE`.
+/// Read a secret from `NAME`, from the file named by `NAME_FILE`, or from the output of the program named
+/// by `NAME_COMMAND` (a vault, a KMS or an HSM client: CFG-05, CFG-07).
 pub fn secret(name: &'static str) -> Result<Vec<u8>, ConfigError> {
     secret_named(name).map_err(|_| ConfigError::Missing(name))
 }
 
 /// [`secret`] for a name that comes from the configuration.
 fn secret_named(name: &str) -> Result<Vec<u8>, ()> {
-    if let Ok(path) = std::env::var(format!("{name}_FILE")) {
-        let s = std::fs::read(&path).map_err(|_| ())?;
-        return Ok(trim(s));
-    }
-    std::env::var(name).map(|v| v.into_bytes()).map_err(|_| ())
-}
-
-fn trim(mut v: Vec<u8>) -> Vec<u8> {
-    while v.last().is_some_and(|b| b.is_ascii_whitespace()) {
-        v.pop();
-    }
-    v
+    aegis_core::secrets::read(name).map_err(|_| ())
 }
 
 pub fn parse_cidr(s: &str) -> Option<(u32, u8)> {

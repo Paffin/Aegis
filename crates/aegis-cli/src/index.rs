@@ -2,7 +2,7 @@
 //!
 //! `build` reads repositories and writes fingerprints, never code. Running it again for a
 //! repository replaces that repository's fingerprints, so a nightly job or a Git hook keeps the
-//! index current. The tenant key comes from `AEGIS_K_TENANT` (or `AEGIS_K_TENANT_FILE`), the same
+//! index current. The tenant key comes from `AEGIS_K_TENANT` (or `_FILE`, or `_COMMAND`), the same
 //! as the gateway's: an index only works with the key it was built with.
 
 use aegis_core::fingerprint::{CodeIndex, Fingerprinter, Repo};
@@ -27,17 +27,11 @@ const CODE: &[&str] = &[
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 
 pub fn fingerprinter() -> Result<Fingerprinter, String> {
-    let key = if let Ok(p) = std::env::var("AEGIS_K_TENANT_FILE") {
-        std::fs::read(&p).map_err(|e| format!("AEGIS_K_TENANT_FILE {p}: {e}"))?
-    } else {
-        std::env::var("AEGIS_K_TENANT")
-            .map_err(|_| "нужен ключ тенанта: AEGIS_K_TENANT или AEGIS_K_TENANT_FILE")?
-            .into_bytes()
-    };
-    let mut key = key;
-    while key.last().is_some_and(|b| b.is_ascii_whitespace()) {
-        key.pop();
-    }
+    let key = aegis_core::secrets::read("AEGIS_K_TENANT").map_err(|e| {
+        format!(
+            "ключ тенанта (AEGIS_K_TENANT, AEGIS_K_TENANT_FILE или AEGIS_K_TENANT_COMMAND): {e}"
+        )
+    })?;
     if key.len() < 16 {
         return Err("ключ тенанта короче 16 байт".into());
     }

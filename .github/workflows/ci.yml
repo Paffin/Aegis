@@ -105,7 +105,7 @@ jobs:
           printf '{"listen":"127.0.0.1:18080","admin_listen":"127.0.0.1:19090","anthropic_base_url":"http://127.0.0.1:1","virtual_keys":[{"sha256":"%s","principal":"u:ci"}]}' "$HASH" > "$RUNNER_TEMP/cfg/gateway.json"
           docker rm -f aegis >/dev/null 2>&1 || true
           docker volume rm -f aegis-ci-cfg >/dev/null 2>&1 || true
-          trap 'docker rm -f aegis >/dev/null 2>&1; docker volume rm -f aegis-ci-cfg >/dev/null 2>&1' EXIT
+          trap 'docker logs aegis 2>&1 | tail -n 30; docker rm -f aegis >/dev/null 2>&1; docker volume rm -f aegis-ci-cfg >/dev/null 2>&1' EXIT
           docker create --name aegis --read-only -v aegis-ci-cfg:/etc/aegis --cap-drop ALL --security-opt no-new-privileges \
             -e AEGIS_K_TENANT=0123456789abcdef0123456789abcdef \
             -e AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 -e AEGIS_ANTHROPIC_KEY=x aegis:ci

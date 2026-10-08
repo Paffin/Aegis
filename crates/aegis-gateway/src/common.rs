@@ -280,12 +280,24 @@ pub fn restore_tool_call(
     });
     // a command that only writes a file (`cat > f <<'EOF'`) is a write of that file: the values are
     // restored by the rules of the `Write` tool and `apply_patch`, secrets only into their own file
-    let file_write = match &cmd {
-        Some((_, Command::Text(t))) if path.is_none() => shell::file_write_target(t),
+    // (the heredoc of `apply_patch` names its files; a patch of several files has no single target)
+    let file_write: Option<Option<String>> = match &cmd {
+        Some((_, Command::Text(t))) if path.is_none() => shell::file_write_target(t)
+            .or_else(|| shell::sed_inplace_target(t))
+            .map(Some)
+            .or_else(|| {
+                shell::heredoc_patch(t).map(|body| {
+                    let paths = patch_paths(&body);
+                    match paths.first() {
+                        Some(first) if paths.iter().all(|p| p == first) => Some(first.clone()),
+                        _ => None,
+                    }
+                })
+            }),
         _ => None,
     };
-    if file_write.is_some() {
-        path = file_write.clone();
+    if let Some(target) = &file_write {
+        path = target.clone();
     }
     let cmd_sink = cmd_text.as_deref().map(sink_for_command);
     let default_sink = if file_write.is_some() {

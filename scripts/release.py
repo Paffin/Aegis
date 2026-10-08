@@ -91,10 +91,13 @@ def main():
     CHANGELOG.write_text(f"{head}{HEADING}\n\n## [{new}] — {today}\n\n{unreleased}\n\n{tail}")
 
     CARGO.write_text(re.sub(r'(?ms)(^\[workspace\.package\].*?^version\s*=\s*")[^"]+(")', rf"\g<1>{new}\g<2>", CARGO.read_text(), count=1))
+    # the repository may be private, so shields.io cannot read its tags: the badge is static
+    readme = ROOT / "README.md"
+    readme.write_text(re.sub(r"(badge/версия-)\d+\.\d+\.\d+(-)", rf"\g<1>{new}\g<2>", readme.read_text(), count=1))
     r = sh("cargo", "update", "--workspace", "--offline")
     if r.returncode != 0:
         sys.exit("cargo update failed:\n" + r.stderr)
-    print(f"released {new}: Cargo.toml, Cargo.lock, CHANGELOG.md updated")
+    print(f"released {new}: Cargo.toml, Cargo.lock, CHANGELOG.md, README.md updated")
 
 
 if __name__ == "__main__":

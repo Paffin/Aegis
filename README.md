@@ -15,9 +15,9 @@
 
 <p align="center">
   <a href="https://github.com/Paffin/Aegis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Paffin/Aegis/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/Paffin/Aegis/tags"><img alt="Версия" src="https://img.shields.io/github/v/tag/Paffin/Aegis?label=версия&color=6366f1"></a>
+  <a href="CHANGELOG.md"><img alt="Версия" src="https://img.shields.io/badge/версия-0.2.0-6366f1"></a>
   <img alt="Статус" src="https://img.shields.io/badge/статус-альфа-orange">
-  <img alt="Тесты" src="https://img.shields.io/badge/тесты-347-14b8a6">
+  <img alt="Тесты" src="https://img.shields.io/badge/тесты-378-14b8a6">
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.80%2B-93450a">
   <img alt="unsafe" src="https://img.shields.io/badge/unsafe-forbidden-brightgreen">
   <a href="LICENSE"><img alt="Лицензия" src="https://img.shields.io/badge/лицензия-Apache--2.0-blue"></a>

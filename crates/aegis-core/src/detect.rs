@@ -238,6 +238,10 @@ pub struct SecretDetector {
     cfg: DetectConfig,
 }
 
+/// The line number that file viewers put before a line (`2|`, `  2→`, `L2:`, `2│`): a configuration
+/// line read through such a tool is `2|DB_PASSWORD=value`, and the key is not at the start of the line.
+const LINE_NO: &str = r"(?:L?\d{1,6}[ \t]*[|:\u{2502}\u{2192}][ \t]?)?";
+
 /// English and Russian keywords that mark the following value as a secret.
 const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|pass(?:[_\-]|\b)|secret|token|credentials?|creds?\b|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
 
@@ -389,8 +393,8 @@ impl SecretDetector {
             quoted: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*["']([^"'\s]{{4,}})["']"#)),
             pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
-            config: re(format!(r#"(?im)^[ \t]*(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
-            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*([^\s"',;)\]}}#]{{6,}})"#)),
+            config: re(format!(r#"(?im)^[ \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
+            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s]){{6,}})"#)),
             inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
             cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
@@ -1605,6 +1609,61 @@ mod tests {
             .into_iter()
             .map(|e| (e.ty, text[e.span.start..e.span.end].to_string()))
             .collect()
+    }
+
+    // REQ: DET-04 — found with Hermes Agent against a real model: its file viewer prefixes lines with
+    // `2|`, and the password on such a line went to the provider. Every viewer's numbering counts.
+    #[test]
+    fn passwords_on_numbered_lines_are_found() {
+        for t in [
+            "1|DB_HOST=db\n2|DB_PASSWORD=Jd8!2jd82k\n3|DB_USER=u\n",
+            "  2\u{2192}DB_PASSWORD=Jd8!2jd82k",
+            "    2\tDB_PASSWORD=Jd8!2jd82k",
+            "L2: DB_PASSWORD=Jd8!2jd82k",
+            "2\u{2502}DB_PASSWORD=Jd8!2jd82k",
+            "12: password: Jd8!2jd82k",
+            "     7 | export API_PASSWORD=Jd8!2jd82k",
+        ] {
+            let f = found(t);
+            assert!(
+                f.iter()
+                    .any(|(ty, v)| *ty == EntityType::Secret && v.starts_with("Jd8!2jd82k")),
+                "{t:?}: {f:?}"
+            );
+        }
+        // numbers and bars alone are not passwords
+        for t in ["2|DB_HOST=db.internal", "3|retries=5", "10: timeout: 30s"] {
+            assert!(
+                found(t).iter().all(|(ty, _)| *ty != EntityType::Secret),
+                "{t}"
+            );
+        }
+    }
+
+    // REQ: DET-04 — found with Mistral Vibe against a real model: a file read by a tool comes back as a
+    // JSON document inside a string, with line breaks written `\n` (two characters).
+    #[test]
+    fn passwords_in_escaped_text_are_found() {
+        for t in [
+            r#"DB_HOST=db\nDB_PASSWORD=Jd8!2jd82k\nDB_USER=u\n"#,
+            r#"{"content":"DB_HOST=db\nDB_PASSWORD=Jd8!2jd82k\nDB_USER=svc_payment\n","lines":3}"#,
+            r#"a=1\r\nAPI_TOKEN=Jd8!2jd82k\r\nb=2"#,
+            r#"x\tPASSWORD=Jd8!2jd82k\tz"#,
+        ] {
+            let f = found(t);
+            let hit = f
+                .iter()
+                .find(|(ty, v)| *ty == EntityType::Secret && v.starts_with("Jd8!2jd82k"));
+            assert!(hit.is_some(), "{t}: {f:?}");
+            // the value ends where the line ends: the next key is not swallowed
+            assert!(
+                !hit.unwrap().1.contains("DB_USER") && !hit.unwrap().1.contains("\\n"),
+                "{t}: {f:?}"
+            );
+        }
+        // a backslash inside a password stays inside it
+        let f = found(r#"PASSWORD=ab\cd12!x"#);
+        assert!(f.iter().any(|(_, v)| v == r#"ab\cd12!x"#), "{f:?}");
     }
 
     // REQ: DET-04 — a literal that is cut off (truncated paste, broken JSON, log line) or

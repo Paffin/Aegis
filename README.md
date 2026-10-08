@@ -15,9 +15,9 @@
 
 <p align="center">
   <a href="https://github.com/Paffin/Aegis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Paffin/Aegis/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="CHANGELOG.md"><img alt="Версия" src="https://img.shields.io/badge/версия-0.2.0-6366f1"></a>
+  <a href="CHANGELOG.md"><img alt="Версия" src="https://img.shields.io/badge/версия-0.2.1-6366f1"></a>
   <img alt="Статус" src="https://img.shields.io/badge/статус-альфа-orange">
-  <img alt="Тесты" src="https://img.shields.io/badge/тесты-386-14b8a6">
+  <img alt="Тесты" src="https://img.shields.io/badge/тесты-393-14b8a6">
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.80%2B-93450a">
   <img alt="unsafe" src="https://img.shields.io/badge/unsafe-forbidden-brightgreen">
   <a href="LICENSE"><img alt="Лицензия" src="https://img.shields.io/badge/лицензия-Apache--2.0-blue"></a>
@@ -180,7 +180,7 @@ Cursor, Windsurf и встроенные подсказки GitHub Copilot хо�
 Версия `0.2`, альфа. Цифры измерены `aegis-bench` на этой машине и повторяются в CI.
 
 <p align="center">
-  <img src="docs/assets/stats.svg" width="900" alt="Ключевые цифры: 386 тестов, 0 утечек, 2,73 ложных срабатываний на 10 тыс. строк, 98,9 % полноты, 9 мс тёплый ход, 190 мс холодный">
+  <img src="docs/assets/stats.svg" width="900" alt="Ключевые цифры: 393 тестов, 0 утечек, 2,73 ложных срабатываний на 10 тыс. строк, 98,9 % полноты, 9 мс тёплый ход, 190 мс холодный">
 </p>
 
 <details>
@@ -193,7 +193,7 @@ Cursor, Windsurf и встроенные подсказки GitHub Copilot хо�
 | Задержка, контекст ~224 тыс. токенов, тёплый ход | p50 ≈ 6 мс, p95 ≈ 9 мс | 20 / 100 мс |
 | Задержка, холодный первый ход | p50 ≈ 140 мс, p95 ≈ 190 мс | 400 мс |
 | Под нагрузкой (30 запросов/с, история ~860 КБ, 214 потоков одновременно) | добавка к времени до первого байта p95 ≈ 10 мс, ошибок 0 | 50 мс, 200 потоков |
-| Тестов | 386 (ядро, property-тесты, фаззинг, набор эксфильтрации, адаптеры протоколов, обход, сквозные по HTTP, CLI) | |
+| Тестов | 393 (ядро, property-тесты, фаззинг, набор эксфильтрации, адаптеры протоколов, обход, сквозные по HTTP, CLI) | |
 
 Полнота измерена на корпусе, написанном тем же автором, что и детекторы: цифра оптимистична. Остаток ложных срабатываний в основном настоящие значения (адреса авторов пакетов, частные IP в тестах).
 

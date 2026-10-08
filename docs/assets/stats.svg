@@ -15,7 +15,7 @@ text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, san
 <text x="32" y="66" class="s">aegis-bench и настоящие клиенты. Полнота измерена на корпусе того же автора: цифра оптимистична</text>
 <rect x="28" y="90" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
 <rect x="28" y="106" width="5" height="100" rx="2" fill="#5eead4"/>
-<text x="52" y="142" class="n">384</text>
+<text x="52" y="142" class="n">393</text>
 <text x="52" y="168" class="t">тестов</text>
 <text x="52" y="192" class="s">property-тесты, фаззинг, 1300+</text>
 <text x="52" y="210" class="s">сценариев эксфильтрации</text>

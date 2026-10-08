@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aegis-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "aegis-gateway",
@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "aegis-hsm",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aho-corasick",
  "base64 0.22.1",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "aegis-hsm",
@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-guard"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "ed25519-dalek",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-hsm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "cryptoki",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aegis-core",
  "axum",

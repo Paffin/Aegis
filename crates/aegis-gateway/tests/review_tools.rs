@@ -188,6 +188,62 @@ fn a_patch_heredoc_and_an_in_place_substitution_are_file_writes() {
     }
 }
 
+// REQ: RST-03, RST-07 — what is judged is the command with pseudonyms, what runs is the command with
+// the real values: if a restored value would make it another command, it does not go out
+#[test]
+fn a_restored_value_may_not_turn_a_file_write_into_another_command() {
+    let e = engine();
+    // a real password that the shell would run in an unquoted heredoc (a command in backticks)
+    let config = "owner: x\npassword: Zq8`id`xk2\n";
+    let req = json!({"model": "m", "max_tokens": 1024, "messages": [
+        {"role": "user", "content": "fix the db"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "config/database.yaml"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": config}]}]});
+    let mut ctx = transform_request(
+        &e,
+        &ReqMeta {
+            principal: "u",
+            conversation: Some("c"),
+            request_id: "r",
+            route: "t",
+        },
+        req.to_string().as_bytes(),
+    )
+    .unwrap()
+    .1;
+    let real = "Zq8`id`xk2";
+    let m = marker_of(&ctx, real);
+    let run = |ctx: &mut RequestCtx, input: Value| call(&e, ctx, "exec_command", input);
+
+    // quoted heredoc: the body is data to the shell, the secret goes back into its own file
+    let (r, out) = run(
+        &mut ctx,
+        json!({"cmd": format!("cat > config/database.yaml <<'EOF'\npassword: {m}\nEOF")}),
+    );
+    assert!(r.is_ok(), "{out}");
+    assert!(out.to_string().contains(real), "{out}");
+    // unquoted: the shell would run `$(...)` of the restored value
+    let (r, out) = run(
+        &mut ctx,
+        json!({"cmd": format!("cat > config/database.yaml <<EOF\npassword: {m}\nEOF")}),
+    );
+    assert_eq!(r.unwrap_err().rule, "restored-command");
+    assert!(!out.to_string().contains(real), "{out}");
+    // the same call with a `workdir` or a `shell` is not judged as a file write at all
+    for extra in [
+        ("workdir", "/tmp/elsewhere"),
+        ("shell", "python3"),
+        ("login", "true"),
+    ] {
+        let mut input =
+            json!({"cmd": format!("cat > config/database.yaml <<'EOF'\npassword: {m}\nEOF")});
+        input[extra.0] = json!(extra.1);
+        let (r, out) = run(&mut ctx, input);
+        assert!(r.is_err(), "{extra:?}: {out}");
+        assert!(!out.to_string().contains(real), "{extra:?}: {out}");
+    }
+}
+
 #[test]
 fn two_different_files_in_one_call_are_refused() {
     let e = engine();

@@ -263,6 +263,10 @@ pub struct SecretDetector {
     config: Regex,
     /// `host x password=value` in free text: `=` only, key delimited on the left.
     inline_eq: Regex,
+    /// `PASSWORD=#Jd8!2jd82k`: right after `=` a `#` is the first character of the value (after `:` it
+    /// is a comment in YAML), alone on a line or in free text.
+    config_hash: Regex,
+    inline_eq_hash: Regex,
     /// `Пароль от УЗ: value`, `пароль - value`: the keyword, up to three words, then `:` or a dash.
     inline_prose: Regex,
     /// `password=&quot;value&quot;`: a quoted value in HTML-escaped text.
@@ -445,7 +449,9 @@ impl SecretDetector {
             pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
             config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#][^\s"']{{5,}})[ \t\r]*$"#)),
+            config_hash: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=(#[^\s"']{{5,}})[ \t\r]*$"#)),
             inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s])(?:[^\s"',;)\]}}\\]|\\[^nrt"'\s]){{5,}})"#)),
+            inline_eq_hash: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=(#(?:[^\s"',;)\]}}\\]|\\[^nrt"'\s]){{5,}})"#)),
             prose_plain: re(format!(r#"(?i)(?:^|[\s,;(\[{{"'«])(?:{KEYWORDS})[ \t]+(?:(?:is|are|это|равен|равно|равны)[ \t]+)?([^\s"',;)\]}}»]{{7,}}[^\s"',;)\]}}».])"#)),
             inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+(?:\p{{L}}+|[A-Za-z0-9_./\-]+)){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#][^\s"',;)\]}}]{{5,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
@@ -495,7 +501,9 @@ impl Detector for SecretDetector {
             (&self.table, false, true),
             (&self.xml_elem, false, true),
             (&self.config, false, true),
+            (&self.config_hash, false, true),
             (&self.inline_eq, false, true),
+            (&self.inline_eq_hash, false, true),
             (&self.inline_prose, false, true),
             (&self.flag, false, true),
             (&self.cli_creds, false, false),
@@ -2147,6 +2155,30 @@ mod tests {
                 got.iter()
                     .any(|(ty, v)| *ty == EntityType::Secret && v == pw),
                 "{line}: {got:?}"
+            );
+        }
+        // a `#` right after `=` is the first character of the value (a comment, after `:`, is not)
+        for line in [
+            "PASSWORD=#Jd8!2jd82k",
+            "export DB_PASS=#Jd8!2jd82k",
+            "set password=#Jd8!2jd82k now",
+        ] {
+            let got = found(line);
+            assert!(
+                got.iter()
+                    .any(|(ty, v)| *ty == EntityType::Secret && v == "#Jd8!2jd82k"),
+                "{line}: {got:?}"
+            );
+        }
+        for line in [
+            "password: #Jd8!2jd82k",
+            "password=# TODO later",
+            "password=#abc",
+        ] {
+            assert!(
+                found(line).iter().all(|(ty, _)| *ty != EntityType::Secret),
+                "{line}: {:?}",
+                found(line)
             );
         }
         // a comment after the value is not part of it; a path and a plain word are not passwords

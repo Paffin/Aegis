@@ -421,65 +421,111 @@ fn with_key_context(engine: &Engine, key: &str, text: &str, mut ents: Vec<Entity
 /// every other block that holds the very same text. A program that prints a password it read from a
 /// file (`print(cfg.password())`) returns it as a bare string with no keyword around it, and nothing
 /// but the earlier block says that it is a secret. Only a value of the type `SECRET`, at least 8
-/// characters, as a whole token (no letter, digit or `_` on either side). The detection cache is not
-/// involved: it still holds the result of each block alone.
+/// characters, not a plain word or a plain number, as a whole token (no letter, digit or `_` on either
+/// side). The detection cache is not involved: it still holds the result of each block alone.
+///
+/// One pass over each block (a single automaton of all the values, the longest first, so that a
+/// secret that contains a shorter one is masked whole); a request that would need more than
+/// [`SWEEP_MAX_HITS`] masks loses the block instead, as with a detector that ran out of time.
 fn sweep_known_secrets(
     engine: &Engine,
     stats: &mut Stats,
     classes: &mut HashSet<aegis_core::types::Class>,
     blocks: &[Blk<'_>],
-    dropped: &[bool],
+    dropped: &mut [bool],
     kept: &mut [Vec<Entity>],
 ) {
     if !engine.detect_cfg.sweep_secrets {
         return;
     }
-    let mut known: Vec<(String, Option<&'static str>)> = vec![];
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut known: Vec<(&str, Option<&'static str>)> = vec![];
     for (b, ents) in blocks.iter().zip(kept.iter()) {
         for e in ents.iter().filter(|e| e.ty == EntityType::Secret) {
             let v = &b.text[e.span.start..e.span.end];
-            if v.chars().count() >= 8 && !known.iter().any(|(k, _)| k == v) {
-                known.push((v.to_string(), e.kind));
+            if sweepable(v) && known.len() < SWEEP_MAX_VALUES && seen.insert(v) {
+                known.push((v, e.kind));
             }
         }
     }
     if known.is_empty() {
         return;
     }
+    known.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(b.0)));
+    let kinds: std::collections::HashMap<&str, Option<&'static str>> =
+        known.iter().copied().collect();
+    let pattern = known
+        .iter()
+        .map(|(v, _)| regex::escape(v))
+        .collect::<Vec<_>>()
+        .join("|");
+    // (a pattern that does not compile only loses the sweep: every block is still masked by itself)
+    let Ok(re) = regex::Regex::new(&pattern) else {
+        return;
+    };
     let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut total = 0usize;
     for (i, (b, ents)) in blocks.iter().zip(kept.iter_mut()).enumerate() {
         if dropped[i] {
             continue;
         }
-        let mut added = false;
-        for (v, kind) in &known {
-            for (at, _) in b.text.match_indices(v.as_str()) {
-                let end = at + v.len();
-                let span = aegis_core::types::Span { start: at, end };
-                if b.text[..at].chars().next_back().is_some_and(word)
-                    || b.text[end..].chars().next().is_some_and(word)
-                    || ents.iter().any(|e| e.span.overlaps(&span))
-                {
-                    continue;
-                }
-                let e = Entity {
-                    span,
-                    ty: EntityType::Secret,
-                    kind: *kind,
-                    detector: "secret.sweep",
-                    person_key: None,
-                };
-                record_entity(engine, stats, &b.text, &e, "mask", "DET-35");
-                *stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
-                classes.insert(e.ty.class());
-                ents.push(e);
-                added = true;
+        let mut found: Vec<Entity> = vec![];
+        let mut over = false;
+        for m in re.find_iter(&b.text) {
+            let (at, end) = (m.start(), m.end());
+            let span = aegis_core::types::Span { start: at, end };
+            if b.text[..at].chars().next_back().is_some_and(word)
+                || b.text[end..].chars().next().is_some_and(word)
+            {
+                continue;
             }
+            // `ents` is sorted and does not overlap itself: the first entity that ends after the
+            // match starts is the only one that can overlap it
+            let idx = ents.partition_point(|e| e.span.end <= span.start);
+            if ents.get(idx).is_some_and(|e| e.span.start < span.end) {
+                continue;
+            }
+            total += 1;
+            if total > SWEEP_MAX_HITS {
+                over = true;
+                break;
+            }
+            found.push(Entity {
+                span,
+                ty: EntityType::Secret,
+                kind: kinds.get(m.as_str()).copied().flatten(),
+                detector: "secret.sweep",
+                person_key: None,
+            });
         }
-        if added {
+        if over {
+            // fail closed: the block is not sent
+            dropped[i] = true;
+            stats.rules.push("DET-35".into());
+            continue;
+        }
+        for e in &found {
+            record_entity(engine, stats, &b.text, e, "mask", "DET-35");
+            *stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
+            classes.insert(e.ty.class());
+        }
+        if !found.is_empty() {
+            ents.extend(found);
             ents.sort_by_key(|e| e.span.start);
         }
     }
+}
+
+/// Most distinct values and most masks that the sweep of one request makes.
+const SWEEP_MAX_VALUES: usize = 512;
+const SWEEP_MAX_HITS: usize = 20_000;
+
+/// A value that the sweep may look for elsewhere: not short, and not a plain word or a plain number
+/// (a planted `password: category` must not mask every `category` of the conversation).
+fn sweepable(v: &str) -> bool {
+    v.chars().count() >= 8
+        && (v.chars().any(|c| !c.is_alphanumeric())
+            || (v.chars().any(|c| c.is_ascii_digit()) && v.chars().any(|c| c.is_alphabetic())))
 }
 
 /// Phase 1 + 2 over all blocks of a request (INV-1: a block's output depends only on itself,
@@ -587,7 +633,7 @@ pub fn process_blocks(
         &mut ctx.stats,
         &mut ctx.classes,
         blocks,
-        &dropped,
+        &mut dropped,
         &mut kept,
     );
     for (b, ents) in blocks.iter().zip(&kept) {

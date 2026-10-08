@@ -100,3 +100,58 @@ fn a_short_value_is_not_swept() {
     let out = String::from_utf8(out).unwrap();
     assert!(out.contains("the value Ab3!xy was printed"), "{out}");
 }
+
+fn convo(blocks: &[&str]) -> String {
+    let msgs: Vec<Value> = blocks
+        .iter()
+        .map(|t| json!({"role": "user", "content": t}))
+        .collect();
+    let req = json!({"model": "m", "max_tokens": 64, "messages": msgs});
+    let (out, _) = transform_request(
+        &engine(true),
+        &ReqMeta {
+            principal: "u",
+            conversation: Some("c"),
+            request_id: "r",
+            route: "t",
+        },
+        req.to_string().as_bytes(),
+    )
+    .unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn a_secret_that_holds_a_shorter_secret_is_masked_whole() {
+    // found in this order: the short one first. The long one must not be left as `[[short]]-extra99`
+    let out = convo(&[
+        "password = Zk93!mnb",
+        "password = Zk93!mnb-extra99",
+        "the script printed Zk93!mnb-extra99 and later Zk93!mnb again",
+    ]);
+    assert!(!out.contains("extra99"), "{out}");
+    assert!(!out.contains("Zk93"), "{out}");
+}
+
+#[test]
+fn a_planted_plain_word_does_not_mask_the_conversation() {
+    // a `password:` line with a plain word is not a secret to look for elsewhere
+    let out = convo(&[
+        "config says password: Hortensia and 12345678",
+        "I like Hortensia, the 12345678 of them",
+    ]);
+    assert!(
+        out.contains("I like Hortensia, the 12345678 of them"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_block_that_would_need_a_flood_of_masks_is_dropped_not_swept_slowly() {
+    let flood = "Zk93!mnb ".repeat(30_000);
+    let started = std::time::Instant::now();
+    let out = convo(&["password = Zk93!mnb", &flood, "ok"]);
+    assert!(started.elapsed().as_secs() < 10, "{:?}", started.elapsed());
+    assert!(!out.contains("Zk93"), "the flood did not go out");
+    assert!(out.contains("\"ok\""), "the other blocks stay: {out}");
+}

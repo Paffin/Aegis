@@ -178,6 +178,43 @@ pub fn patch_paths(patch: &str) -> Vec<String> {
         .collect()
 }
 
+/// The target of a command that only writes a file (`Some(Some(path))`; a patch of several files is
+/// `Some(None)`), or `None` when it is an ordinary shell command.
+fn file_write_kind(t: &str) -> Option<Option<String>> {
+    shell::file_write_target(t)
+        .or_else(|| shell::sed_inplace_target(t))
+        .map(Some)
+        .or_else(|| {
+            shell::heredoc_patch(t).map(|body| {
+                let paths = patch_paths(&body);
+                match paths.first() {
+                    Some(first) if paths.iter().all(|p| p == first) => Some(first.clone()),
+                    _ => None,
+                }
+            })
+        })
+}
+
+/// A call whose only fields are the command and settings of the output and the time.
+fn only_a_command(input: &Value, key: &str) -> bool {
+    input.as_object().is_some_and(|o| {
+        o.keys().all(|k| {
+            k == key
+                || matches!(
+                    k.as_str(),
+                    "max_output_tokens"
+                        | "yield_time_ms"
+                        | "timeout_ms"
+                        | "timeout"
+                        | "justification"
+                        | "description"
+                        | "tty"
+                        | "run_in_background"
+                )
+        })
+    })
+}
+
 fn shell_join(parts: &[String]) -> String {
     parts
         .iter()
@@ -279,21 +316,13 @@ pub fn restore_tool_call(
         Command::List(l) => l.join("\n"),
     });
     // a command that only writes a file (`cat > f <<'EOF'`) is a write of that file: the values are
-    // restored by the rules of the `Write` tool and `apply_patch`, secrets only into their own file
-    // (the heredoc of `apply_patch` names its files; a patch of several files has no single target)
+    // restored by the rules of the `Write` tool and `apply_patch`, secrets only into their own file.
+    // Only when the call is that command and nothing else: a `workdir` makes `.env` another file, a
+    // `shell` changes how the text is read
     let file_write: Option<Option<String>> = match &cmd {
-        Some((_, Command::Text(t))) if path.is_none() => shell::file_write_target(t)
-            .or_else(|| shell::sed_inplace_target(t))
-            .map(Some)
-            .or_else(|| {
-                shell::heredoc_patch(t).map(|body| {
-                    let paths = patch_paths(&body);
-                    match paths.first() {
-                        Some(first) if paths.iter().all(|p| p == first) => Some(first.clone()),
-                        _ => None,
-                    }
-                })
-            }),
+        Some((key, Command::Text(t))) if path.is_none() && only_a_command(input, key) => {
+            file_write_kind(t)
+        }
         _ => None,
     };
     if let Some(target) = &file_write {
@@ -338,6 +367,8 @@ pub fn restore_tool_call(
     } else {
         early
     };
+    // (kept to put the call back as it was if the restored command turns out to be another one)
+    let before_restore = file_write.as_ref().map(|_| input.clone());
     let denied: std::cell::RefCell<Option<Denied>> = std::cell::RefCell::new(early);
     let check = |sink: Sink, text: &str, precleared: bool, ctx: &RequestCtx| -> String {
         let c = SinkContext {
@@ -408,7 +439,7 @@ pub fn restore_tool_call(
             // elements of an argv array arrive with the array's key and were handled above
             *s = check(sink, s, false, ctx);
         };
-        match input {
+        match &mut *input {
             Value::String(s) => visit("", s),
             other => {
                 // argv arrays are skipped: their elements carry the same key as the array
@@ -424,6 +455,29 @@ pub fn restore_tool_call(
                 } else {
                     walk_strings(other, "", &mut visit);
                 }
+            }
+        }
+    }
+
+    // what was judged was the command with pseudonyms; what will run is the command with the real values.
+    // A value with a newline, a quote, `$(`, a backtick or the delimiter of the heredoc or of `sed` would
+    // make it another command: it is still the same plain write of the same file, or it does not go out
+    if denied.borrow().is_none() {
+        if let (Some(target), Some((key, Command::Text(_)))) = (&file_write, &cmd) {
+            let now = input
+                .get(*key)
+                .and_then(Value::as_str)
+                .and_then(file_write_kind);
+            if now.as_ref() != Some(target) {
+                if let Some(original) = before_restore {
+                    *input = original;
+                }
+                *denied.borrow_mut() = Some(Denied {
+                    rule: "restored-command".into(),
+                    sink: default_sink,
+                    reason: "restored-command".into(),
+                    classes: vec![],
+                });
             }
         }
     }

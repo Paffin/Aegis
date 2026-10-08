@@ -16,7 +16,7 @@ jobs:
         # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev clang libclang-dev make tar
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev libsqlite3-dev clang libclang-dev make tar
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - uses: actions/cache@v4
@@ -66,7 +66,7 @@ jobs:
         # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev clang libclang-dev make tar
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev libsqlite3-dev clang libclang-dev make tar
       # prebuilt binaries: the runner has no Docker daemon, so the Docker-based cargo-deny action cannot run
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
@@ -97,14 +97,25 @@ jobs:
       - name: Build the image
         run: docker build -t aegis:ci .
       - name: The image starts read-only, as non-root, and answers
+        # the Docker daemon is the host's: paths of this runner container are not visible to it, so the
+        # config is copied into a created container, and the probe joins its network namespace
         run: |
           mkdir -p "$RUNNER_TEMP/cfg"
           HASH=$(printf %s aegis-vk-ci | sha256sum | cut -d' ' -f1)
           printf '{"listen":"127.0.0.1:18080","admin_listen":"127.0.0.1:19090","anthropic_base_url":"http://127.0.0.1:1","virtual_keys":[{"sha256":"%s","principal":"u:ci"}]}' "$HASH" > "$RUNNER_TEMP/cfg/gateway.json"
-          docker run -d --name aegis --network host --read-only --cap-drop ALL --security-opt no-new-privileges             -v "$RUNNER_TEMP/cfg:/etc/aegis:ro" -e AEGIS_K_TENANT=0123456789abcdef0123456789abcdef             -e AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 -e AEGIS_ANTHROPIC_KEY=x aegis:ci
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:19090/readyz && break; sleep 0.5; done
-          curl -sf http://127.0.0.1:19090/readyz
+          docker rm -f aegis >/dev/null 2>&1 || true
+          docker create --name aegis --read-only --cap-drop ALL --security-opt no-new-privileges \
+            -e AEGIS_K_TENANT=0123456789abcdef0123456789abcdef \
+            -e AEGIS_K_AUDIT=fedcba9876543210fedcba9876543210 -e AEGIS_ANTHROPIC_KEY=x aegis:ci
+          docker cp "$RUNNER_TEMP/cfg" aegis:/etc/aegis
+          docker start aegis
+          for i in $(seq 1 30); do
+            docker run --rm --network container:aegis curlimages/curl -sf http://127.0.0.1:19090/readyz && break
+            sleep 1
+          done
+          docker run --rm --network container:aegis curlimages/curl -sf http://127.0.0.1:19090/readyz
           test "$(docker inspect aegis --format '{{.Config.User}}')" = nonroot
+          docker rm -f aegis
   clients:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
@@ -113,7 +124,7 @@ jobs:
         # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev clang libclang-dev make tar
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev libsqlite3-dev clang libclang-dev make tar
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:

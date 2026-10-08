@@ -574,15 +574,9 @@ impl PolicyDoc {
                 ["mask", "block_request"],
             )?,
         };
-        for (k, v, want) in [(
-            "provider_server_tools",
-            &self.defaults.provider_server_tools,
-            "block_request",
-        )] {
-            if let Some(v) = v {
-                if v != want {
-                    return Err(format!("defaults.{k}: значение «{v}» пока не поддерживается, допустимо только «{want}»"));
-                }
+        if let Some(v) = &self.defaults.provider_server_tools {
+            if v != "block_request" {
+                return Err(format!("defaults.provider_server_tools: значение «{v}» пока не поддерживается, допустимо только «block_request»"));
             }
         }
 

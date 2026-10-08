@@ -66,12 +66,12 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev
       # prebuilt binaries: the runner has no Docker daemon, so the Docker-based cargo-deny action cannot run
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-audit
       - run: cargo deny check
       - run: cargo audit
-      - uses: dtolnay/rust-toolchain@stable
       - name: SBOM
         run: |
           cargo install cargo-cyclonedx --locked
@@ -118,7 +118,9 @@ jobs:
       - name: Real clients against Aegis and a mock provider
         run: |
           npm install -g @anthropic-ai/claude-code
-          pip install uv
+          python3 -m pip install --user --break-system-packages uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           scripts/clients.sh
       - name: Managed settings of Claude Code, needs root for /etc/claude-code
         run: sudo -E env "PATH=$PATH" "HOME=$HOME" scripts/client-claude-managed.sh

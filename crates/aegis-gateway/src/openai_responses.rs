@@ -216,16 +216,14 @@ pub fn transform_request(
 
     if let Some(tools) = root.get("tools") {
         for t in tools.items() {
-            for key in ["description"] {
-                if let Some(d @ Node::Str { .. }) = t.get(key) {
-                    col.push(
-                        d,
-                        d.string(body).unwrap_or_default(),
-                        Source::User,
-                        false,
-                        None,
-                    );
-                }
+            if let Some(d @ Node::Str { .. }) = t.get("description") {
+                col.push(
+                    d,
+                    d.string(body).unwrap_or_default(),
+                    Source::User,
+                    false,
+                    None,
+                );
             }
         }
     }

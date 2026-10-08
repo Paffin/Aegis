@@ -10,15 +10,22 @@ use aegis_core::types::EntityType;
 
 const PW: &str = "Jd8!2jd82k";
 
+fn pipe() -> &'static Pipeline {
+    static P: std::sync::OnceLock<Pipeline> = std::sync::OnceLock::new();
+    P.get_or_init(|| {
+        Pipeline::new(
+            DetectConfig {
+                internal_zones: vec!["corp.local".into()],
+                ..Default::default()
+            },
+            Dictionary::default(),
+        )
+    })
+}
+
 fn found(text: &str) -> Vec<String> {
-    let pipe = Pipeline::new(
-        DetectConfig {
-            internal_zones: vec!["corp.local".into()],
-            ..Default::default()
-        },
-        Dictionary::default(),
-    );
-    pipe.scan(text)
+    pipe()
+        .scan(text)
         .into_iter()
         .filter(|e| e.ty == EntityType::Secret)
         .map(|e| text[e.span.start..e.span.end].to_string())
@@ -168,6 +175,17 @@ fn wrapped() -> Vec<(&'static str, String)> {
         format!("# prod\nDB_PASSWORD={p}  # rotate in march"),
     );
     add("russian label", format!("Пароль: {p}"));
+    // in a sentence, with nothing between the word and the value
+    add("prose ru", format!("Мой пароль {p}, не передавайте."));
+    add("prose ru end", format!("Подключись, пароль {p}."));
+    add("prose en", format!("the password {p} works"));
+    add("prose en is", format!("The password is {p}."));
+    add("prose passphrase", format!("passphrase {p}"));
+    add(
+        "prose ru capital",
+        format!("Пароль {p} действует до пятницы"),
+    );
+    add("prose token", format!("my token {p} expired"));
     v
 }
 
@@ -190,6 +208,51 @@ fn the_password_is_found_in_every_wrapper() {
 }
 
 #[test]
+fn phones_before_any_punctuation_of_a_sentence() {
+    let mut missed = vec![];
+    for phone in [
+        "+7 (916) 123-45-67",
+        "8 916 123 45 67",
+        "+79161234567",
+        "8-916-123-45-67",
+    ] {
+        for end in [".", ",", ";", "!", "?", ")", "\"", " ", "\n", ""] {
+            let text = format!("Позвоните по номеру {phone}{end}");
+            if !found_all(&text)
+                .iter()
+                .any(|(t, v)| *t == EntityType::Phone && v.contains(&phone[phone.len() - 4..]))
+            {
+                missed.push(format!("{text:?}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:?}");
+    // a number with more digits after it is still not a phone
+    assert!(found_all("id +7 (916) 123-45-67.5")
+        .iter()
+        .all(|(t, _)| *t != EntityType::Phone));
+    assert!(found_all("build 8 916 123 45 67-12")
+        .iter()
+        .all(|(t, _)| *t != EntityType::Phone));
+}
+
+#[test]
+fn words_after_these_keywords_are_not_passwords() {
+    for t in [
+        "the password reset link",
+        "token `--target` option",
+        "invalid token 1.2.3-rc1",
+        "a secret santa 2026 gift",
+        "password manager",
+        "the token quote! macro",
+        "secret path /etc/ssl/private1 is fine",
+        "пароль https://x.y/z1 не нужен",
+    ] {
+        assert!(found(t).is_empty(), "{t}: {:?}", found(t));
+    }
+}
+
+#[test]
 fn what_is_found_does_not_swallow_the_next_line() {
     // a value ends where its line ends, whatever the wrapper
     for (name, text) in wrapped() {
@@ -205,14 +268,8 @@ fn what_is_found_does_not_swallow_the_next_line() {
 // ---- the same for the other kinds of values ----
 
 fn found_all(text: &str) -> Vec<(EntityType, String)> {
-    let pipe = Pipeline::new(
-        DetectConfig {
-            internal_zones: vec!["corp.local".into()],
-            ..Default::default()
-        },
-        Dictionary::default(),
-    );
-    pipe.scan(text)
+    pipe()
+        .scan(text)
         .into_iter()
         .map(|e| (e.ty, text[e.span.start..e.span.end].to_string()))
         .collect()

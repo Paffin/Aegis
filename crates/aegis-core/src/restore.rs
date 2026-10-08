@@ -57,7 +57,7 @@ fn master() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(&format!(
-            "(?P<exact>{exact})|(?P<loose>(?i:(?:\\\\?\\[|&#91;|&lsqb;|\\\\u005b){{2}}(?P<lt>[a-z]{{2,10}})_(?P<lid>[a-z2-7]{{8}})(?P<lattrs>(?: [a-z]+=[a-z0-9,]{{1,40}}){{0,4}})(?:\\\\?\\]|&#93;|&rsqb;|\\\\u005d){{2}}))|(?P<bare>\\b[A-Z]{{2,10}}_[a-z2-7]{{8}}\\b)|(?P<short>\\bh-[a-z2-7]{{8}}\\b(?:…|\\.\\.\\.)?)",
+            "(?P<exact>{exact})|(?P<loose>(?i:(?:\\\\?\\[|&#91;|&lsqb;|\\\\u005b){{2}}(?P<lt>[a-z]{{2,10}})_(?P<lid>[a-z2-7]{{8}})(?P<lattrs>(?: [a-z]+=[a-z0-9,]{{1,40}}){{0,4}})(?:\\\\?\\]|&#93;|&rsqb;|\\\\u005d){{2}}))|(?P<bare>\\b[A-Z]{{2,10}}_[a-z2-7]{{8}}\\b)|(?P<short>\\bh-[a-z2-7]{{8}}\\b(?:(?:\\.[A-Za-z0-9\\-]{{1,40}}){{0,6}}\\.aegis\\.invalid|…|\\.\\.\\.)?)",
             exact = marker_grammar().as_str()
         ))
         .expect("static regex")
@@ -131,7 +131,16 @@ pub fn restore_after(
     for c in master().captures_iter(text) {
         let m = c.get(0).expect("whole match");
         let found = if c.name("exact").is_some() {
-            mapping.get(m.as_str()).map(Found::Bound)
+            mapping.get(m.as_str()).map(Found::Bound).or_else(|| {
+                // A weak model copies the long host pseudonym with a slip in its random tail
+                // (`z-3efyty4g` -> `z-3eforro4g`); the first label `h-xxxxxxxx` is the key, as in the
+                // short form. Only in text, as the short form is.
+                let first = m.as_str().split('.').next()?;
+                (sink == Sink::Text && first.starts_with("h-"))
+                    .then(|| mapping.get_short_host(first))
+                    .flatten()
+                    .map(Found::Bound)
+            })
         } else if c.name("loose").is_some() {
             let ty = c["lt"].to_uppercase();
             let id = c["lid"].to_lowercase();
@@ -145,7 +154,8 @@ pub fn restore_after(
             // Only when not part of a longer bracketed form already handled above.
             mapping.get_core(m.as_str()).map(Found::Bound)
         } else if c.name("short").is_some() && sink == Sink::Text {
-            let key = m.as_str().trim_end_matches('…').trim_end_matches("...");
+            // (the short form `h-xxxxxxxx`, with an ellipsis, or a full pseudonym whose tail the model garbled)
+            let key = m.as_str().split(['.', '…']).next().unwrap_or("");
             mapping.get_short_host(key).map(Found::Bound)
         } else {
             None

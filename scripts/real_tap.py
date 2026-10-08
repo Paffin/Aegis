@@ -3,7 +3,8 @@
 Forwards every request unchanged to UPSTREAM (HTTPS) and streams the answer back. Appends one JSON line per
 request to LOG: method, path, request body, the status the provider answered and, for errors, the start of
 its answer. The key the provider receives is never written: only whether it equals the key in TAP_KEY.
-Usage: real_tap.py PORT LOG UPSTREAM   (TAP_KEY in the environment)
+Usage: real_tap.py PORT LOG UPSTREAM   (TAP_KEY in the environment; TAP_RESPONSES=1 also records the
+answer's chunks, to replay a failure exactly)
 """
 import http.server, json, os, sys, urllib.request, urllib.error
 
@@ -36,6 +37,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("connection", "close")
         self.end_headers()
         first = b""
+        chunks = []
         try:
             while True:
                 chunk = resp.read1(4096) if hasattr(resp, "read1") else resp.read(4096)
@@ -43,12 +45,16 @@ class H(http.server.BaseHTTPRequestHandler):
                     break
                 if len(first) < 600:
                     first += chunk[:600]
+                chunks.append(chunk.decode("utf-8", "replace"))
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
         if status >= 400:
             rec["answer"] = first.decode("utf-8", "replace")[:600]
+        if os.environ.get("TAP_RESPONSES"):
+            # what the provider sent, in the pieces it arrived in (it holds pseudonyms, never real values)
+            rec["chunks"] = chunks
         with open(LOG, "a") as f:
             f.write(json.dumps(rec) + "\n")
 

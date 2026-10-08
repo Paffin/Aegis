@@ -236,6 +236,8 @@ pub struct SecretDetector {
     /// `<password>value</password>`, `<add key="DbPassword" value="value"/>`.
     xml_elem: Regex,
     xml_attr: Regex,
+    /// `пароль Jd8!2jd82k`, `the password is Jd8!2jd82k`: the keyword and the value, nothing between.
+    prose_plain: Regex,
     /// `--password value`, `?token=value`.
     flag: Regex,
     /// `curl -u user:pass`, `sshpass -p pass`, `redis-cli -a pass`, `mysql -ppass`.
@@ -406,6 +408,7 @@ impl SecretDetector {
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
             config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
             inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s]){{6,}})"#)),
+            prose_plain: re(format!(r#"(?i)(?:^|[\s,;(\[{{"'«])(?:{KEYWORDS})[ \t]+(?:(?:is|are|это|равен|равно|равны)[ \t]+)?([^\s"',;)\]}}»]{{7,}}[^\s"',;)\]}}».])"#)),
             inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
             cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
@@ -481,6 +484,33 @@ impl Detector for SecretDetector {
                     60,
                 ));
             }
+        }
+        // `пароль Jd8!2jd82k`: the keyword and the value with only a space between. Stricter than the rest,
+        // because prose has words after these keywords: the value must hold a digit, must not look like an
+        // option (`--target`), a code span, a URL or a path.
+        for c in self.prose_plain.captures_iter(text) {
+            let Some(v) = c.get(1) else { continue };
+            let val = v.as_str();
+            if !val.chars().any(|c| c.is_ascii_digit())
+                || !val.starts_with(|c: char| c.is_alphanumeric() || "!@#$%^&*?+".contains(c))
+                || val.contains("://")
+                || val.contains('/')
+                || val.contains('`')
+                // a version number (`1.2.3-rc1`) is not a password
+                || (val.starts_with(|c: char| c.is_ascii_digit()) && val.matches('.').count() >= 2)
+                || self.cfg.is_placeholder(val)
+                || looks_like_code_value(val, false)
+            {
+                continue;
+            }
+            out.push(cand(
+                v.start(),
+                v.end(),
+                EntityType::Secret,
+                Some("password"),
+                "secret.assign",
+                55,
+            ));
         }
         // A literal that is not a single closed word: cut off by the end of the text or the line
         // (a truncated paste, a log line, a broken JSON), or a passphrase with spaces.
@@ -1042,8 +1072,15 @@ impl Detector for PiiDetector {
                     continue;
                 }
                 // a number inside a longer numeric literal (`+292277026596-12`) is not a phone
-                if byte_after(text, m.end())
-                    .is_some_and(|c| c.is_ascii_digit() || c == '-' || c == '.')
+                // (a full stop or a hyphen after the number is a continuation only when a digit follows it)
+                let rest = &text[m.end()..];
+                let mut after = rest.chars();
+                let continues = match after.next() {
+                    Some(c) if c.is_ascii_digit() => true,
+                    Some('-') | Some('.') => after.next().is_some_and(|d| d.is_ascii_digit()),
+                    _ => false,
+                };
+                if continues
                     || byte_before(text, m.start()).is_some_and(|c| c.is_alphanumeric() || c == '_')
                 {
                     continue;

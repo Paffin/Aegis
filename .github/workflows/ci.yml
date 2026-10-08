@@ -89,6 +89,7 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
       - name: Helm chart renders
         run: |
           helm lint deploy/helm/aegis --set config.bundle.source=https://example/bundle.json --set 'config.bundle.trustedKeys={00}'

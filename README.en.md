@@ -62,7 +62,30 @@ Measured with `aegis-bench`, repeated in CI: 2.76 false positives per 10k lines 
 
 **Verified with real clients:** Claude Code, Codex CLI, Qwen Code, Gemini CLI, OpenCode, Aider, Continue, Cline, Hermes Agent, OpenClaw, Crush, Kilo Code, Pi, Goose, GitHub Copilot CLI and Mistral Vibe run against Aegis and a mock provider (`scripts/clients.sh`): values are masked in every request and in the history, a harmless command runs with the real value, a call that would carry a secret out is replaced by an explanation. **Against a real provider** (OpenRouter, `scripts/client-real.sh`) 15 of the 16 clients were run with real models: neither the host nor the password appears in any request the provider received. The first run found two password leaks in the detector (numbered lines and JSON strings with `\n`); both are fixed. Codex's encrypted reasoning items pass through and are accepted. **Not verified yet, and the main risk:** direct OpenAI, Anthropic and Gemini (whether Anthropic thinking signatures and Gemini `thoughtSignature` survive is unconfirmed), Gemini CLI, Droid; other clients (Roo Code, Zed, Open WebUI, …) are tested only with synthetic requests. The Docker image was built and started, the Helm chart renders, but nothing was applied to a cluster. Details: [docs/STATUS.md](docs/STATUS.md).
 
-Aegis does not anonymize (pseudonymization is reversible, so data stays personal data under GDPR), does not stop a malicious insider, does not detect prompt injection (it limits the consequences), and does not see tool execution on the developer's machine. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+**Client matrix** (OpenRouter, `openai/gpt-4o-mini`, Claude Code on `anthropic/claude-haiku-4.5`; hard check: no host and no password in any request body the provider received, none in audit or log, all answers 200, no marker on disk; one run per scenario, one weak model per client; the "edit a file" run predates the last detector changes and is due to be repeated):
+
+| Client | Protocol | Mock provider | Real model: command | Real model: edit a file | Leaks to provider |
+|---|---|---|---|---|---|
+| Claude Code 2.1 | Anthropic | ✔ 38 checks (5 scenarios incl. guard and managed settings) | ✔ | ✔ | 0 |
+| Codex CLI 0.160 | Responses | ✔ 9 | ✔ | ✔ | 0 |
+| Qwen Code 0.25 | Chat | ✔ 8 | ✔ | ✔ | 0 |
+| Gemini CLI 0.63 | Gemini | ✔ 10 | not run (no Gemini-format endpoint at OpenRouter) | not run | n/a |
+| OpenCode 1.18 | Chat | ✔ 8 | ✔ | ✘ client auto-rejected a permission prompt | 0 |
+| Aider 0.86 | Chat | ✔ 6 | ✔ (no tool calls in Aider) | ✘ model answered without an edit block | 0 |
+| Continue CLI 1.5 | Chat | ✔ 8 | ✔ | ✔ | 0 |
+| Cline CLI 3.0 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| **Hermes Agent 0.19** | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| **OpenClaw 2026.6** | Chat | ✔ 9 | ✔ | ✘ tool called, file not changed (model) | 0 |
+| Crush 0.97 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| Kilo Code CLI 7.8 | Chat | ✔ 9 | ✔ | ✘ client auto-rejected a permission prompt | 0 |
+| Pi 0.73 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| Goose 1.53 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| Copilot CLI 1.0 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+| Mistral Vibe 2.26 | Chat | ✔ 9 | ✔ | ✔ | 0 |
+
+A ✘ in the file column is a miss of the client or the model, not a leak. Details, models and the quality of restoration per model: [docs/CLIENTS.md](docs/CLIENTS.md) and the Russian README.
+
+Aegis does not anonymize (pseudonymization is reversible, so data stays personal data under GDPR), does not stop a malicious insider, does not detect prompt injection (it limits the consequences), and does not see what a launched program does (`aegis-guard` checks the call, the client's sandbox isolates the process). See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 ## Layout
 

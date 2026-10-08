@@ -5,6 +5,7 @@
 ## [Не выпущено]
 
 ### Добавлено
+- `aegis-guard install`, `settings` с флагами `--gateway`, `--vk-file`, `--lock`, `--sandbox`, `--allow-host` и `doctor [--strict]`: управляемые настройки Claude Code, которые пользователь не может отключить (хук, адрес gateway, `apiKeyHelper`, только управляемые хуки, песочница с сетевой политикой и `failIfUnavailable`), проверка прав файла, бинарника и правил (`AGG-04`, `AGG-06`). Сценарий `scripts/client-claude-managed.sh` на настоящем Claude Code.
 - Протокол **Google Gemini**: `generateContent`, `streamGenerateContent` (SSE и JSON-массив), `countTokens`, `embedContent`; `camelCase` и `snake_case`; подписи рассуждений не изменяются.
 - Протоколы **OpenAI Completions** (автодополнение, fill-in-the-middle) и **OpenAI Embeddings** (индексация кода).
 - Провайдеры независимы и необязательны: Anthropic, OpenAI-совместимый, Gemini. Способы авторизации `x-api-key`, `bearer`, `api-key` (Azure), `x-goog-api-key`, `none` (локальные модели); `openai_api_prefix` для вендоров без `/v1` (Zhipu, Volcengine, Qianfan).

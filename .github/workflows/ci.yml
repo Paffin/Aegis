@@ -87,3 +87,5 @@ jobs:
           scripts/clients.sh
       - name: Managed settings of Claude Code, needs root for /etc/claude-code
         run: sudo -E env "PATH=$PATH" "HOME=$HOME" scripts/client-claude-managed.sh
+      - name: Agent benchmark tasks (each fails before and passes after a reference fix)
+        run: python3 scripts/agent_bench.py --selftest

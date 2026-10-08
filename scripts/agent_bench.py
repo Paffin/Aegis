@@ -295,6 +295,8 @@ def run_once(agent, mode, t, args, key):
         except subprocess.TimeoutExpired as e:
             timed_out, out = True, ""
         secs = time.time() - t0
+        if args.keep:
+            open(os.path.join(w, "agent.out"), "w").write(out)
     finally:
         for p in procs:
             p.send_signal(signal.SIGTERM)

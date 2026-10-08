@@ -56,10 +56,12 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-      - uses: rustsec/audit-check@v2
+      # prebuilt binaries: the runner has no Docker daemon, so the Docker-based cargo-deny action cannot run
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-deny,cargo-audit
+      - run: cargo deny check
+      - run: cargo audit
       - uses: dtolnay/rust-toolchain@stable
       - name: SBOM
         run: |
@@ -70,6 +72,9 @@ jobs:
           name: sbom
           path: "**/*.cdx.json"
   image:
+    # needs a Docker daemon (and helm) on the runner; set the repository variable AEGIS_RUNNER_DOCKER=true
+    # after mounting /var/run/docker.sock into the runner container
+    if: vars.AEGIS_RUNNER_DOCKER == 'true'
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +98,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Real clients against Aegis and a mock provider
         run: |
           npm install -g @anthropic-ai/claude-code

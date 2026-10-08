@@ -1686,6 +1686,59 @@ fn is_first_name(word: &str) -> bool {
     })
 }
 
+/// First names that are also ordinary words (`Роман Классический`, `Вера Информатика`). Beside a
+/// word that looks like an adjective they are not taken for a person.
+fn is_ambiguous_first_name(word: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "роман",
+        "вера",
+        "надежда",
+        "любовь",
+        "марина",
+        "роза",
+        "лада",
+        "лилия",
+        "ангелина",
+        "злата",
+        "снежана",
+        "яна",
+        "алла",
+        "инна",
+        "мирон",
+        "лев",
+        "март",
+        "марк",
+        "гоша",
+    ];
+    let w = word.to_lowercase();
+    WORDS.iter().any(|n| {
+        let stem = n.trim_end_matches(['а', 'я', 'ь', 'и']);
+        let stem = if stem.chars().count() < 3 { n } else { stem };
+        w.strip_prefix(stem)
+            .is_some_and(|rest| NAME_ENDINGS.contains(&rest))
+    })
+}
+
+/// `-ский`, `-цкий`, `-ская` …: a surname, but far more often an adjective.
+fn is_adjectival(word: &str) -> bool {
+    let w = word.to_lowercase();
+    [
+        "ский",
+        "цкий",
+        "ская",
+        "цкая",
+        "ское",
+        "цкое",
+        "ские",
+        "цкие",
+        "ского",
+        "ской",
+        "ским",
+    ]
+    .iter()
+    .any(|s| w.ends_with(s))
+}
+
 fn is_patronymic(word: &str) -> bool {
     let w = word.to_lowercase();
     for sfx in ["", "а", "у", "ем", "е"] {
@@ -1883,6 +1936,8 @@ impl Detector for NameDetector {
                 if rest >= 2
                     && ((is_first_name(w[0]) && is_surname_like(w[1]))
                         || (is_surname_like(w[0]) && is_first_name(w[1])))
+                    && !((is_ambiguous_first_name(w[0]) && is_adjectival(w[1]))
+                        || (is_ambiguous_first_name(w[1]) && is_adjectival(w[0])))
                 {
                     push(a, words[i + k + 1].1, &w[..2], 62, "names.pair");
                     k += 2;
@@ -2085,6 +2140,12 @@ mod tests {
         );
         assert_eq!(names("позвони Анне Смирновой завтра"), ["Анне Смирновой"]);
         assert_eq!(names("Пётр Алексеевич пришёл"), ["Пётр Алексеевич"]);
+        // a first name that is also a word, beside an adjective-like word, is not a person (a real
+        // `Роман Достоевский` is missed on purpose; the directory still finds a known one)
+        assert_eq!(
+            names("писал Вера Иванова и Роман Достоевский"),
+            ["Вера Иванова"]
+        );
         assert_eq!(
             names("Отчёт: Орлов И.И. и А. С. Грибоедов"),
             ["Орлов И.И.", "А. С. Грибоедов"]
@@ -2111,6 +2172,8 @@ mod tests {
             "Ivan Petrovich Sidorov",
             "обратиться к И. в отделе",
             "Москва Санкт-Петербург Казань",
+            "Роман Классический, Вера Российская, Надежда Московская",
+            "Нижний Новгород, Красная Площадь, Большая Никитская, Парк Горького",
         ] {
             assert!(names(t).is_empty(), "{t}: {:?}", names(t));
         }

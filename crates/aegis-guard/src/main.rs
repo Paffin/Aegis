@@ -6,7 +6,7 @@ use aegis_guard::hook::{run, Format};
 use std::io::Read;
 
 fn usage() -> ! {
-    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь] [--gateway URL] [--vk-file файл] [--sandbox] [--allow-host узел]... [--lock]   настройки Claude Code\naegis-guard install [те же флаги] [--managed-path файл]   записать их в управляемый файл настроек машины (нужен root)\naegis-guard doctor [--config файл] [--aegis-guard путь] [--managed-path файл] [--strict]   держится ли установка\naegis-guard check [--config файл]\naegis-guard enroll [--id имя] [--key-file файл]   ключ этого устройства; печатает строку для guard.devices\naegis-guard token [--key-file файл] [--conversation id]\naegis-guard credential (--vk-file файл | --vk-env ИМЯ) [--key-file файл]   `ключ~токен` для apiKeyHelper");
+    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь] [--gateway URL] [--vk-file файл] [--sandbox] [--allow-host узел]... [--lock]   настройки Claude Code\naegis-guard install [те же флаги] [--managed-path файл]   записать их в управляемый файл настроек машины (нужен root)\naegis-guard doctor [--config файл] [--aegis-guard путь] [--managed-path файл] [--strict]   держится ли установка\naegis-guard codex-hooks [--config файл] [--aegis-guard путь]   hooks.json для Codex CLI (хук `--format codex`)\naegis-guard check [--config файл]\naegis-guard enroll [--id имя] [--key-file файл]   ключ этого устройства; печатает строку для guard.devices\naegis-guard token [--key-file файл] [--conversation id]\naegis-guard credential (--vk-file файл | --vk-env ИМЯ) [--key-file файл]   `ключ~токен` для apiKeyHelper");
     std::process::exit(2)
 }
 
@@ -95,7 +95,9 @@ fn main() {
         }
         "hook" => {
             let fmt = match format.as_deref() {
-                None | Some("claude-code") => Format::ClaudeCode,
+                // Codex CLI sends the same PreToolUse input (`tool_name` is `Bash`, `tool_input.command`)
+                // and reads the same `hookSpecificOutput` answer
+                None | Some("claude-code") | Some("codex") => Format::ClaudeCode,
                 Some("generic") => Format::Generic,
                 Some(_) => usage(),
             };
@@ -123,6 +125,18 @@ fn main() {
                 println!("{out}");
             }
             std::process::exit(code);
+        }
+        // `hooks.json` of the Codex CLI: one PreToolUse hook on every tool. Codex runs a hook only after
+        // the user has reviewed and trusted it (it says "hooks need review before they can run");
+        // Aegis does not bypass that step.
+        "codex-hooks" => {
+            let bin = binary.unwrap_or_else(|| "aegis-guard".into());
+            let mut command = format!("{bin} hook --format codex");
+            if let Some(c) = &config {
+                command.push_str(&format!(" --config {c}"));
+            }
+            let doc = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": command}]}]}});
+            println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_default());
         }
         "check" => match load(config) {
             Ok(r) => println!(

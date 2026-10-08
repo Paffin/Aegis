@@ -5,6 +5,8 @@
 ## [Не выпущено]
 
 ### Добавлено
+- `aegis-guard codex-hooks` и `hook --format codex`: хук Codex CLI. Вход настоящего Codex 0.161 (`tool_name: Bash`, `tool_input.command`) читается тем же охранником. Сквозной отказ с настоящим Codex и раздача через `requirements.toml` не проверены: хук Codex требует подтверждения человеком.
+- Хост с опечаткой в зоне (`payments.corp.lcoal`) считается внутренним: перестановка двух букв или одна неверная буква в `local`, `internal`, `intranet` и последней метке своей зоны. Найдено бенчмарком агентов: опечатка в адресе уходила провайдеру.
 - `aegis-guard install`, `settings` с флагами `--gateway`, `--vk-file`, `--lock`, `--sandbox`, `--allow-host` и `doctor [--strict]`: управляемые настройки Claude Code, которые пользователь не может отключить (хук, адрес gateway, `apiKeyHelper`, только управляемые хуки, песочница с сетевой политикой и `failIfUnavailable`), проверка прав файла, бинарника и правил (`AGG-04`, `AGG-06`). Сценарий `scripts/client-claude-managed.sh` на настоящем Claude Code.
 - Протокол **Google Gemini**: `generateContent`, `streamGenerateContent` (SSE и JSON-массив), `countTokens`, `embedContent`; `camelCase` и `snake_case`; подписи рассуждений не изменяются.
 - Протоколы **OpenAI Completions** (автодополнение, fill-in-the-middle) и **OpenAI Embeddings** (индексация кода).

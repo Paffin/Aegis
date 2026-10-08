@@ -145,7 +145,10 @@ impl DetectConfig {
             Some((z, b)) => (*z, b),
             None => return false,
         };
-        if !BUILTIN_ZONES.contains(&zone) || before.is_empty() {
+        // A mistyped zone (`payments.corp.lcoal`) is still an internal name: the value reaches the
+        // provider as it is written, and a typo is exactly what an agent is asked to fix
+        let typo = !BUILTIN_ZONES.contains(&zone) && before.len() >= 2 && self.is_zone_typo(zone);
+        if !(BUILTIN_ZONES.contains(&zone) || typo) || before.is_empty() {
             return false;
         }
         // `self.engine.internal`, `args.local`: member access in code, not a host name
@@ -163,6 +166,31 @@ impl DetectConfig {
         before.len() >= 2
             || before[0].contains('-')
             || before[0].chars().any(|c| c.is_ascii_digit())
+    }
+
+    /// The last label differs from a zone of five letters or more (`local`, `internal`, `intranet`,
+    /// the last label of a configured zone) by one swapped pair or one wrong letter. Missing and extra
+    /// letters do not count: `locale` and `localhost` are words of code and of networks.
+    fn is_zone_typo(&self, label: &str) -> bool {
+        let l: Vec<char> = label.chars().collect();
+        let near = |z: &str| {
+            let z: Vec<char> = z.chars().collect();
+            if z.len() < 5 || z.len() != l.len() || l == z {
+                return false;
+            }
+            let diff: Vec<usize> = (0..z.len()).filter(|&i| z[i] != l[i]).collect();
+            match diff.as_slice() {
+                [_] => true,
+                [i, j] => j - i == 1 && z[*i] == l[*j] && z[*j] == l[*i],
+                _ => false,
+            }
+        };
+        BUILTIN_ZONES.iter().any(|z| near(z))
+            || self
+                .internal_zones
+                .iter()
+                .filter_map(|z| z.rsplit('.').next())
+                .any(|z| near(&z.to_ascii_lowercase()))
     }
 
     pub fn is_private_ipv4(&self, ip: u32) -> bool {
@@ -1667,6 +1695,25 @@ mod tests {
 
     // REQ: DET-04 — found with Hermes Agent against a real model: its file viewer prefixes lines with
     // `2|`, and the password on such a line went to the provider. Every viewer's numbering counts.
+    #[test]
+    fn a_mistyped_internal_zone_is_still_a_host() {
+        let f = found("URL = 'https://payments.corp.lcoal/api'");
+        assert!(f.iter().any(|(_, v)| v == "payments.corp.lcoal"), "{f:?}");
+        // words of code and of networks are not zones
+        for t in [
+            "app.messages.locale = 1",
+            "curl http://a.b.localhost/x",
+            "see docs.rs and a.b.c",
+        ] {
+            assert!(
+                !found(t).iter().any(|(_, v)| v.ends_with("locale")
+                    || v.ends_with("localhost")
+                    || v.ends_with(".rs")),
+                "{t}"
+            );
+        }
+    }
+
     #[test]
     fn passwords_on_numbered_lines_are_found() {
         for t in [

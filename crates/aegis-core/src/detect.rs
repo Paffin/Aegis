@@ -83,6 +83,9 @@ pub struct DetectConfig {
     /// DET-30: names of people in free text, by the shape of Russian names (patronymics, initials,
     /// a first name beside a surname). On by default.
     pub names: bool,
+    /// DET-35: a secret found in one block of a request is masked in the other blocks that hold the
+    /// same text (the output of a program that prints a password it read). On by default.
+    pub sweep_secrets: bool,
 }
 
 impl Default for DetectConfig {
@@ -114,6 +117,7 @@ impl Default for DetectConfig {
             .collect(),
             service_account_patterns: vec![],
             names: true,
+            sweep_secrets: true,
         }
     }
 }
@@ -443,7 +447,7 @@ impl SecretDetector {
             config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#][^\s"']{{5,}})[ \t\r]*$"#)),
             inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s])(?:[^\s"',;)\]}}\\]|\\[^nrt"'\s]){{5,}})"#)),
             prose_plain: re(format!(r#"(?i)(?:^|[\s,;(\[{{"'«])(?:{KEYWORDS})[ \t]+(?:(?:is|are|это|равен|равно|равны)[ \t]+)?([^\s"',;)\]}}»]{{7,}}[^\s"',;)\]}}».])"#)),
-            inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+[\p{{L}}\p{{N}}_./\-]+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#][^\s"',;)\]}}]{{5,}})"#)),
+            inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+(?:\p{{L}}+|[A-Za-z0-9_./\-]+)){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#][^\s"',;)\]}}]{{5,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
             cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
             basic: re(r"(?i)authorization:\s*basic\s+([A-Za-z0-9+/=]{16,})".into()),

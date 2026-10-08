@@ -51,6 +51,9 @@ pub struct ServerConfig {
     /// DET-30: names of people in free text by the shape of the name; on unless `false`.
     #[serde(default)]
     pub detect_names: Option<bool>,
+    /// DET-35: a secret found in one block is masked in the other blocks of the request; on unless `false`.
+    #[serde(default)]
+    pub sweep_secrets: Option<bool>,
     #[serde(default)]
     pub employees: Vec<Employee>,
     #[serde(default)]
@@ -410,6 +413,7 @@ impl ServerConfig {
         let mut detect = DetectConfig {
             internal_zones: self.internal_zones.clone(),
             names: self.detect_names.unwrap_or(true),
+            sweep_secrets: self.sweep_secrets.unwrap_or(true),
             ..Default::default()
         };
         for r in &self.company_ranges {

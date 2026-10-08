@@ -4,6 +4,7 @@
 use crate::engine::{Engine, RequestCtx, SinkAudit};
 use aegis_core::policy::{is_shell_tool, Sink};
 use aegis_core::restore::{restore, restore_after, sink_for_command, SinkContext};
+use aegis_core::shell;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -277,8 +278,19 @@ pub fn restore_tool_call(
         Command::Argv(a) => shell_join(a),
         Command::List(l) => l.join("\n"),
     });
+    // a command that only writes a file (`cat > f <<'EOF'`) is a write of that file: the values are
+    // restored by the rules of the `Write` tool and `apply_patch`, secrets only into their own file
+    let file_write = match &cmd {
+        Some((_, Command::Text(t))) if path.is_none() => shell::file_write_target(t),
+        _ => None,
+    };
+    if file_write.is_some() {
+        path = file_write.clone();
+    }
     let cmd_sink = cmd_text.as_deref().map(sink_for_command);
-    let default_sink = if shell {
+    let default_sink = if file_write.is_some() {
+        Sink::FileWrite
+    } else if shell {
         cmd_sink.unwrap_or(Sink::ShellNetwork)
     } else {
         engine

@@ -417,6 +417,71 @@ fn with_key_context(engine: &Engine, key: &str, text: &str, mut ents: Vec<Entity
     ents
 }
 
+/// DET-35 (amendment of INV-1): a secret that was found in one block of the request is masked in
+/// every other block that holds the very same text. A program that prints a password it read from a
+/// file (`print(cfg.password())`) returns it as a bare string with no keyword around it, and nothing
+/// but the earlier block says that it is a secret. Only a value of the type `SECRET`, at least 8
+/// characters, as a whole token (no letter, digit or `_` on either side). The detection cache is not
+/// involved: it still holds the result of each block alone.
+fn sweep_known_secrets(
+    engine: &Engine,
+    stats: &mut Stats,
+    classes: &mut HashSet<aegis_core::types::Class>,
+    blocks: &[Blk<'_>],
+    dropped: &[bool],
+    kept: &mut [Vec<Entity>],
+) {
+    if !engine.detect_cfg.sweep_secrets {
+        return;
+    }
+    let mut known: Vec<(String, Option<&'static str>)> = vec![];
+    for (b, ents) in blocks.iter().zip(kept.iter()) {
+        for e in ents.iter().filter(|e| e.ty == EntityType::Secret) {
+            let v = &b.text[e.span.start..e.span.end];
+            if v.chars().count() >= 8 && !known.iter().any(|(k, _)| k == v) {
+                known.push((v.to_string(), e.kind));
+            }
+        }
+    }
+    if known.is_empty() {
+        return;
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    for (i, (b, ents)) in blocks.iter().zip(kept.iter_mut()).enumerate() {
+        if dropped[i] {
+            continue;
+        }
+        let mut added = false;
+        for (v, kind) in &known {
+            for (at, _) in b.text.match_indices(v.as_str()) {
+                let end = at + v.len();
+                let span = aegis_core::types::Span { start: at, end };
+                if b.text[..at].chars().next_back().is_some_and(word)
+                    || b.text[end..].chars().next().is_some_and(word)
+                    || ents.iter().any(|e| e.span.overlaps(&span))
+                {
+                    continue;
+                }
+                let e = Entity {
+                    span,
+                    ty: EntityType::Secret,
+                    kind: *kind,
+                    detector: "secret.sweep",
+                    person_key: None,
+                };
+                record_entity(engine, stats, &b.text, &e, "mask", "DET-35");
+                *stats.by_class.entry(e.ty.class().as_str()).or_insert(0) += 1;
+                classes.insert(e.ty.class());
+                ents.push(e);
+                added = true;
+            }
+        }
+        if added {
+            ents.sort_by_key(|e| e.span.start);
+        }
+    }
+}
+
 /// Phase 1 + 2 over all blocks of a request (INV-1: a block's output depends only on itself,
 /// except for the own-marker escape rule of PSE-11).
 pub fn process_blocks(
@@ -517,6 +582,14 @@ pub fn process_blocks(
         }
         kept.push(keep);
     }
+    sweep_known_secrets(
+        engine,
+        &mut ctx.stats,
+        &mut ctx.classes,
+        blocks,
+        &dropped,
+        &mut kept,
+    );
     for (b, ents) in blocks.iter().zip(&kept) {
         p.register(&b.text, ents, &b.source, &mut ctx.mapping);
     }

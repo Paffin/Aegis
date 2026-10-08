@@ -252,7 +252,9 @@ pub struct SecretDetector {
 const LINE_NO: &str = r"(?:L?\d{1,6}[ \t]*[|:\u{2502}\u{2192}][ \t]?)?";
 
 /// English and Russian keywords that mark the following value as a secret.
-const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|pass(?:[_\-]|\b)|secret|token|credentials?|creds?\b|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
+/// The word ends are ASCII (`(?-u:\b)`): a Unicode `\b` makes the regex engine leave its fast automaton
+/// on any non-ASCII byte, and the scan of a conversation was 2-3 times slower (measured: cold p95 524 ms vs 154 ms).
+const KEYWORDS: &str = r"(?:password|passwd|pwd|passphrase|pass(?:[_\-]|(?-u:\b))|secret|token|credentials?|creds?(?-u:\b)|api[_\-]?key|apikey|access[_\-]?key|private[_\-]?key|client[_\-]?secret|парол\w*|токен\w*|секрет\w*)";
 
 /// Does the name of a JSON member say that its value is a secret (`db_password`, `REDIS_PASS`,
 /// `credentials`, `apiToken`)? Then the value is scanned with its name in front of it, as a line

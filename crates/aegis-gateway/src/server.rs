@@ -154,6 +154,12 @@ pub struct Route {
     pub models: Vec<String>,
     /// The principal needs one of these groups; empty = any principal.
     pub groups: Vec<String>,
+    /// RTE-03: used only when a policy action sends a request here, never picked by model or group.
+    pub reroute_only: bool,
+    /// RTE-03: the model name this route's provider knows; replaces the client's `model`.
+    pub model: Option<String>,
+    /// RTE-05: context window of the route's model, in tokens; a request that does not fit is not sent.
+    pub context_tokens: Option<usize>,
     pub upstream: Upstream,
 }
 
@@ -176,7 +182,8 @@ pub fn select_route<'a>(
 ) -> Option<&'a Route> {
     let fam = family_of(p);
     routes.iter().find(|r| {
-        r.family == fam
+        !r.reroute_only
+            && r.family == fam
             && (r.models.is_empty() || r.models.iter().any(|m| glob_match(m, model)))
             && (r.groups.is_empty() || r.groups.iter().any(|g| principal.groups.contains(g)))
     })
@@ -272,6 +279,8 @@ pub struct AppState {
     /// Requests in flight (a request holds its permit until its response body is over): beyond
     /// the limit a request is refused at once instead of piling up bodies in memory.
     pub limiter: Arc<tokio::sync::Semaphore>,
+    /// RTE-04: conversation (by salt) -> route it was sent to by a policy action, and until when.
+    pub pins: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
     /// Creation time of the newest bundle applied (or cached): older ones are refused.
     pub bundle_floor: std::sync::atomic::AtomicI64,
     /// Longest silence in a request body (the whole body gets ten times as long).
@@ -290,6 +299,42 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// RTE-04: the route a conversation was sent to by a policy action, if still valid.
+    pub fn pinned_route(&self, conversation: &str) -> Option<String> {
+        if conversation.is_empty() {
+            return None;
+        }
+        let now = now_unix();
+        let pins = self.pins.lock().ok()?;
+        pins.get(conversation)
+            .filter(|(_, until)| *until > now)
+            .map(|(r, _)| r.clone())
+    }
+
+    /// Pin a conversation to a route for eight hours; returns the route it was pinned to before.
+    pub fn pin_route(&self, conversation: &str, route: &str) -> Option<String> {
+        if conversation.is_empty() {
+            return None;
+        }
+        let now = now_unix();
+        let mut pins = self.pins.lock().ok()?;
+        if pins.len() >= 10_000 {
+            pins.retain(|_, (_, until)| *until > now);
+            if pins.len() >= 10_000 {
+                pins.clear();
+            }
+        }
+        let before = pins
+            .get(conversation)
+            .filter(|(_, until)| *until > now)
+            .map(|(r, _)| r.clone());
+        pins.insert(
+            conversation.to_string(),
+            (route.to_string(), now + 8 * 3600),
+        );
+        before
+    }
+
     pub fn new(
         engine: Engine,
         anthropic: Option<Upstream>,
@@ -319,6 +364,7 @@ impl AppState {
             limiter: Arc::new(tokio::sync::Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
             body_idle: BODY_IDLE,
             bundle_floor: std::sync::atomic::AtomicI64::new(0),
+            pins: Default::default(),
             routes: vec![],
             model_aliases: Default::default(),
             audit: Audit::disabled(),
@@ -1366,17 +1412,92 @@ async fn proxy(
             );
         }
     };
-    let summary = ctx.stats.summary();
-    tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
+    // RTE-03, RTE-04, RTE-05: a policy action may send the request to another route, and a
+    // conversation sent there stays there.
+    let mut ctx = ctx;
+    let mut up_cfg = up_cfg;
+    let mut route_name = route_name;
+    let mut route_model: Option<String> = None;
+    let mut rerouted = false;
+    let wanted = ctx
+        .reroute
+        .clone()
+        .map(|n| (n, true))
+        .or_else(|| st.pinned_route(&ctx.conversation_hash).map(|n| (n, false)));
+    if let Some((name, fresh)) = wanted {
+        let fits = |r: &Route| {
+            r.family == family_of(proto) && r.context_tokens.is_none_or(|c| new_body.len() / 3 <= c)
+        };
+        match st
+            .routes
+            .iter()
+            .find(|r| r.name == name)
+            .filter(|r| fits(r))
+        {
+            Some(r) => {
+                up_cfg = &r.upstream;
+                route_name = r.name.clone();
+                route_model = r.model.clone();
+                rerouted = true;
+                ctx.route = r.name.clone();
+                if fresh {
+                    let before = st.pin_route(&ctx.conversation_hash, &r.name);
+                    if before.as_deref() != Some(r.name.as_str()) {
+                        *ctx.notice.borrow_mut() = Some(format!(
+                            "[Aegis: запрос содержит закрытый код и направлен на внутренний маршрут «{}»]",
+                            r.name
+                        ));
+                    }
+                }
+            }
+            // closed code must not go to the provider the request was meant for
+            None if fresh => {
+                complete(&st, &ctx, &info, "rejected");
+                return with_aegis_headers(
+                    fail(
+                        403,
+                        "permission_error",
+                        &format!("Aegis: запрос содержит закрытый код, а маршрут «{name}» недоступен или не подходит (протокол или окно контекста)"),
+                    ),
+                    &rid,
+                    &ctx.stats.summary(),
+                );
+            }
+            None => {}
+        }
+    }
+    let info = ReqInfo {
+        route: route_name.clone(),
+        ..info
+    };
+    let mut summary = ctx.stats.summary();
+    if rerouted {
+        // visible to the client in `X-Aegis-Summary`, next to the notice in the text (RTE-04)
+        summary.push_str(&format!(
+            "{}route={route_name}",
+            if summary.is_empty() { "" } else { ";" }
+        ));
+    }
+    tracing::info!(request_id = %rid, principal = %principal.id, summary = %summary, route = %route_name, blocks = ctx.stats.blocks_total, scanned = ctx.stats.blocks_scanned, overhead_ms = t0.elapsed().as_secs_f64() * 1000.0, "request transformed");
 
-    let new_body = if st.model_aliases.is_empty() || gem.is_some() {
+    // the route's own model name wins over the client's and over the global aliases
+    let route_alias: std::collections::BTreeMap<String, String> = match &route_model {
+        Some(m) => [(model.clone(), m.clone())].into(),
+        None => Default::default(),
+    };
+    let aliases = if route_model.is_some() {
+        &route_alias
+    } else {
+        &st.model_aliases
+    };
+    let new_body = if aliases.is_empty() || gem.is_some() {
         new_body
     } else {
-        rename_model(new_body, &st.model_aliases)
+        rename_model(new_body, aliases)
     };
     let url = match &gem {
         Some(g) => up_cfg.url(
-            &alias_gemini_path(&g.path, &g.model, &st.model_aliases),
+            &alias_gemini_path(&g.path, &g.model, aliases),
             &forward_query(&g.query),
         ),
         // The query goes through (Claude Code sends `?beta=true`), minus the client's `key=`.

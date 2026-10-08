@@ -176,6 +176,9 @@ async fn requests_follow_their_route() {
             family: Family::OpenAi,
             models: vec!["qwen*".into()],
             groups: vec![],
+            reroute_only: false,
+            model: None,
+            context_tokens: None,
             upstream: Upstream::openai(local_up, "").with_auth(Auth::Nothing),
         },
         Route {
@@ -183,6 +186,9 @@ async fn requests_follow_their_route() {
             family: Family::OpenAi,
             models: vec!["gpt-*".into()],
             groups: vec!["devs".into()],
+            reroute_only: false,
+            model: None,
+            context_tokens: None,
             upstream: Upstream::openai(team_up, "team-key"),
         },
     ];

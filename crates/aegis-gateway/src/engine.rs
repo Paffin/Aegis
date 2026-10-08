@@ -329,6 +329,10 @@ pub struct RequestCtx {
     /// The end of the text already sent to the client in this response, as the model wrote it:
     /// the context for the next piece of a stream (RST-11 looks back to find the start of a URL).
     pub text_tail: std::cell::RefCell<String>,
+    /// RTE-03: the route a code index match sends this request to.
+    pub reroute: Option<String>,
+    /// RTE-04: a notice for the user, put before the first text of the response.
+    pub notice: std::cell::RefCell<Option<String>>,
 }
 
 /// One scanned string literal of the request.
@@ -453,15 +457,23 @@ pub fn process_blocks(
             ctx.stats.code_blocks.push((
                 m.repo.clone(),
                 m.classification.clone(),
-                match act {
+                match &act {
                     CodeAction::Warn => "warn",
                     CodeAction::DropBlock => "drop_block",
                     CodeAction::BlockRequest => "block_request",
+                    CodeAction::Route(_) => "route",
                 },
             ));
             ctx.stats.rules.push("DET-20".into());
             match act {
                 CodeAction::Warn => {}
+                // RTE-03: the first match decides; the gateway checks the route before sending
+                CodeAction::Route(name) => {
+                    if ctx.reroute.is_none() {
+                        ctx.reroute = Some(name);
+                        ctx.stats.rules.push("RTE-03".into());
+                    }
+                }
                 CodeAction::DropBlock => dropped[i] = true,
                 CodeAction::BlockRequest => {
                     return Err(IngressError::Blocked {
@@ -526,6 +538,8 @@ impl RequestCtx {
             route: String::new(),
             conversation_hash: String::new(),
             text_tail: Default::default(),
+            reroute: None,
+            notice: Default::default(),
         }
     }
 }

@@ -22,7 +22,8 @@ pub struct CodeIndexConfig {
     #[serde(default = "d_min_tokens")]
     pub min_tokens: usize,
     /// What happens to a matching block, by classification of the repository:
-    /// `warn` (audit only), `drop_block` (the block is replaced by a notice) or `block_request`.
+    /// `warn` (audit only), `drop_block` (the block is replaced by a notice), `block_request`, or
+    /// `route:<name>` (the whole request goes to that route, RTE-03).
     #[serde(default)]
     pub actions: BTreeMap<String, String>,
     /// For a classification not named in `actions`. Default `warn`.
@@ -37,11 +38,13 @@ fn d_min_tokens() -> usize {
     80
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeAction {
     Warn,
     DropBlock,
     BlockRequest,
+    /// RTE-03: the request goes to this route (an internal model).
+    Route(String),
 }
 
 impl CodeAction {
@@ -50,9 +53,18 @@ impl CodeAction {
             "warn" => Ok(Self::Warn),
             "drop_block" => Ok(Self::DropBlock),
             "block_request" => Ok(Self::BlockRequest),
-            o => Err(format!(
-                "code_index: действие «{o}», нужно warn, drop_block или block_request"
-            )),
+            o => match o.strip_prefix("route:") {
+                Some(n)
+                    if !n.is_empty()
+                        && n.chars()
+                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) =>
+                {
+                    Ok(Self::Route(n.to_string()))
+                }
+                _ => Err(format!(
+                    "code_index: действие «{o}», нужно warn, drop_block, block_request или route:<имя маршрута>"
+                )),
+            },
         }
     }
 }
@@ -113,8 +125,23 @@ impl CodeGuard {
     pub fn action_for(&self, m: &CodeMatch) -> CodeAction {
         self.actions
             .get(&m.classification)
-            .copied()
-            .unwrap_or(self.default_action)
+            .unwrap_or(&self.default_action)
+            .clone()
+    }
+
+    /// Names of the routes the actions send requests to (to check they exist).
+    pub fn route_names(&self) -> Vec<String> {
+        self.actions
+            .values()
+            .chain(std::iter::once(&self.default_action))
+            .filter_map(|a| {
+                if let CodeAction::Route(n) = a {
+                    Some(n.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn repos(&self) -> usize {

@@ -202,6 +202,9 @@ async fn tokens_are_accepted_by_the_gateway_and_groups_pick_the_route() {
         family: Family::OpenAi,
         models: vec![],
         groups: vec!["ml".into()],
+        reroute_only: false,
+        model: None,
+        context_tokens: None,
         upstream: Upstream::openai(team_url, "k"),
     }];
     st.oidc = Some(Arc::new(verifier(&i)));

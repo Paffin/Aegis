@@ -75,6 +75,10 @@ pub fn restore_text(engine: &Engine, ctx: &RequestCtx, text: &str) -> (String, b
         }
         tail.drain(..cut);
     }
+    // RTE-04: a route change is told to the user in the first text of the answer
+    if let Some(n) = ctx.notice.borrow_mut().take() {
+        return (format!("{n}\n{}", o.text), o.hinted);
+    }
     (o.text, o.hinted)
 }
 
@@ -897,6 +901,8 @@ pub fn finish_request<'n>(
     let salt_bytes = salt.0;
     let mut ctx = RequestCtx {
         text_tail: Default::default(),
+        reroute: None,
+        notice: Default::default(),
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

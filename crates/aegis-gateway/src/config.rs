@@ -194,6 +194,16 @@ pub struct RouteConfig {
     /// Groups of virtual keys the route is for. Empty: everyone.
     #[serde(default)]
     pub groups: Vec<String>,
+    /// Only for requests that a policy action sends here (`code_index.actions: route:<name>`); never
+    /// picked by model name or group. For an internal model that may see closed code.
+    #[serde(default)]
+    pub reroute_only: bool,
+    /// The model name of this route's provider; replaces the model the client asked for.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Context window of the route's model, tokens. A request that does not fit is refused, not cut.
+    #[serde(default)]
+    pub context_tokens: Option<usize>,
 }
 
 fn d_listen() -> String {
@@ -363,6 +373,9 @@ impl ServerConfig {
                 family,
                 models: r.models.clone(),
                 groups: r.groups.clone(),
+                reroute_only: r.reroute_only,
+                model: r.model.clone(),
+                context_tokens: r.context_tokens,
                 upstream: up,
             });
         }
@@ -505,6 +518,15 @@ impl ServerConfig {
             u
         });
         let routes = self.build_routes()?;
+        if let Some(g) = &engine.code {
+            for n in g.route_names() {
+                if !routes.iter().any(|r| r.name == n) {
+                    return Err(ConfigError::Invalid(format!(
+                        "code_index: action route:{n}, but there is no route named {n}"
+                    )));
+                }
+            }
+        }
         if anthropic.is_none() && openai.is_none() && gemini.is_none() && routes.is_empty() {
             return Err(ConfigError::Invalid(
                 "no provider: set anthropic_base_url, openai_base_url, gemini_base_url or routes"

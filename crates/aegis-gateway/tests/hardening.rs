@@ -293,6 +293,9 @@ async fn count_tokens_follows_the_route() {
             family: aegis_gateway::server::Family::Anthropic,
             models: vec!["team-*".into()],
             groups: vec![],
+            reroute_only: false,
+            model: None,
+            context_tokens: None,
             upstream: Upstream::anthropic(team_up, "TEAM-KEY"),
         }];
     })

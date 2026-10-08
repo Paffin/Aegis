@@ -2,6 +2,9 @@ name: ci
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 2 * * *"   # nightly: the heavy gates also run on the tip of main
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -43,6 +46,8 @@ jobs:
       - name: Smoke test with real binaries
         run: scripts/smoke.sh
       - name: Detection quality gates (QA-05)
+        # heavy: on main, nightly and by hand; branches get the fast checks above
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
           cargo run -q --release -p aegis-bench -- recall --n 1000 --min-recall 98
           cargo run -q --release -p aegis-bench -- fp --dir "$HOME/.cargo/registry/src" --samples 0 --max-per-10k 8
@@ -56,6 +61,7 @@ jobs:
       - name: Demo (README walkthrough keeps working)
         run: scripts/demo.sh
       - name: Load test (NFR-03, NFR-04)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: cargo run -q --release -p aegis-bench -- load --dir "$HOME/.cargo/registry/src" --seconds 10 --stream-secs 8 --max-ttfb-overhead-p95-ms 100 --min-streams 200
   supply-chain:
     # SEC-09: licenses, bans, advisories and sources; a CycloneDX SBOM of the workspace
@@ -118,6 +124,8 @@ jobs:
           docker run --rm --network container:aegis curlimages/curl -sf http://127.0.0.1:19090/readyz
           test "$(docker inspect aegis --format '{{.Config.User}}')" = nonroot
   clients:
+    # real clients take about 3 minutes: on main, nightly and by hand
+    if: github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4

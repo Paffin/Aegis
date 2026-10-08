@@ -1,0 +1,38 @@
+name: release-prepare
+# Opens a pull request that bumps the version and moves "Не выпущено" of CHANGELOG.md under it
+# (scripts/release.py). Run by hand: Actions -> release-prepare -> Run workflow. Needs
+# Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull requests".
+# Merging the pull request is the release: `release-tag` tags main and starts `release`.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version, for example 0.3.0; empty = from the commits since the last tag"
+        required: false
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  prepare:
+    runs-on: [self-hosted, Linux, ARM64, aegis]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+      - id: bump
+        run: |
+          python3 scripts/release.py ${INPUT_VERSION:+--version "$INPUT_VERSION"}
+          echo "version=$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: release/v${{ steps.bump.outputs.version }}
+          title: "release: v${{ steps.bump.outputs.version }}"
+          commit-message: "release: v${{ steps.bump.outputs.version }}"
+          body: |
+            Version and changelog for v${{ steps.bump.outputs.version }} (`scripts/release.py`).
+            Merging this pull request tags `main` as `v${{ steps.bump.outputs.version }}` and starts the `release` workflow
+            (image, signature, binaries, GitHub release).

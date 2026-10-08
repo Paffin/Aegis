@@ -1,0 +1,32 @@
+name: release-tag
+# When the version in Cargo.toml on main has no tag yet, tag it and start `release`.
+# A tag pushed with the workflow token does not start other workflows, so `release` is started explicitly.
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+permissions:
+  contents: write
+  actions: write
+jobs:
+  tag:
+    runs-on: [self-hosted, Linux, ARM64, aegis]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        run: echo "version=$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "v$VERSION is already tagged"; exit 0
+          fi
+          git tag "v$VERSION"
+          git push origin "v$VERSION"
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/dispatches" \
+            -d "{\"ref\":\"main\",\"inputs\":{\"tag\":\"v$VERSION\"}}"

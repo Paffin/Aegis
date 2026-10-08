@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 start_stack() {
   LABEL=$1; TOOL=$2
-  W=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$W"' EXIT
+  W=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null || true; chmod -R u+rwX "$W" 2>/dev/null || true; rm -rf "$W" || true' EXIT
   cargo build -q --release -p aegis-gateway
   PORT=$((20000 + RANDOM % 20000)); ADMIN=$((PORT + 1)); UP=$((PORT + 2))
   mkdir -p "$W/home" "$W/work"; : > "$W/provider.log"

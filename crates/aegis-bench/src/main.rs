@@ -4,6 +4,7 @@
 //! `fp` scans a directory of ordinary open-source code and counts detections. Everything found
 //! in such code is a false positive by construction, so the rate per 10 000 lines is the metric.
 
+mod code;
 mod load;
 mod perf;
 mod recall;
@@ -56,6 +57,34 @@ enum Cmd {
         /// Fail if fewer streams were in flight at the peak.
         #[arg(long)]
         min_streams: Option<usize>,
+    },
+    /// Fingerprint index of closed code: recall of fragments and false matches (QA-10, DET-20).
+    Code {
+        /// The repository taken as closed and indexed.
+        #[arg(long)]
+        closed: PathBuf,
+        /// Directories of other code (repeatable): fragments from them must not match.
+        #[arg(long = "negative", required = true)]
+        negatives: Vec<PathBuf>,
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
+        #[arg(long, default_value_t = 2000)]
+        samples: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[arg(long, default_value_t = 0.9)]
+        threshold: f32,
+        #[arg(long, default_value_t = 50)]
+        min_tokens: usize,
+        /// Fail if the recall of judgeable fragments is below this (percent).
+        #[arg(long)]
+        min_recall: Option<f64>,
+        /// Fail if more than this share of foreign fragments matches (percent).
+        #[arg(long)]
+        max_false: Option<f64>,
+        /// Print this many false matches with their files.
+        #[arg(long, default_value_t = 0)]
+        show: usize,
     },
     /// Recall per type on a synthetic positive corpus.
     Recall {
@@ -134,6 +163,32 @@ fn main() {
                     min_streams,
                 },
             );
+            std::process::exit(if ok { 0 } else { 1 });
+        }
+        Cmd::Code {
+            closed,
+            negatives,
+            lines,
+            samples,
+            seed,
+            threshold,
+            min_tokens,
+            min_recall,
+            max_false,
+            show,
+        } => {
+            let ok = code::run(code::Opts {
+                closed,
+                negatives,
+                lines,
+                samples,
+                seed,
+                threshold,
+                min_tokens,
+                min_recall,
+                max_false,
+                show,
+            });
             std::process::exit(if ok { 0 } else { 1 });
         }
         Cmd::Fp {

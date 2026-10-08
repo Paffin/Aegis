@@ -32,10 +32,10 @@ pub struct CodeIndexConfig {
 }
 
 fn d_threshold() -> f32 {
-    0.8
+    0.9
 }
 fn d_min_tokens() -> usize {
-    80
+    50
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

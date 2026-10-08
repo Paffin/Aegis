@@ -16,6 +16,8 @@ use std::collections::{BTreeSet, HashMap};
 pub const K: usize = 5;
 /// Hashes in one window.
 pub const W: usize = 4;
+/// Different identifiers a block must have to be judged at all.
+pub const MIN_WORDS: usize = 12;
 
 /// Normalized tokens of source code in any C-like, Python-like or Go-like language.
 pub fn tokens(text: &str) -> Vec<String> {
@@ -122,10 +124,25 @@ impl Fingerprinter {
 
     /// Winnowed fingerprints of a text (a set: each appears once) and the number of tokens.
     pub fn of(&self, text: &str) -> (BTreeSet<u64>, usize) {
+        let (set, n, _) = self.of_with_words(text);
+        (set, n)
+    }
+
+    /// [`of`](Self::of) and the number of different identifiers in the text.
+    pub fn of_with_words(&self, text: &str) -> (BTreeSet<u64>, usize, usize) {
         let toks = tokens(text);
         let n = toks.len();
+        let words = toks
+            .iter()
+            .filter(|t| {
+                t.chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_')
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         if n < K {
-            return (BTreeSet::new(), n);
+            return (BTreeSet::new(), n, words);
         }
         let th: Vec<u64> = toks
             .iter()
@@ -162,7 +179,7 @@ impl Fingerprinter {
             .into_iter()
             .map(|i| self.keyed(&grams[i].to_le_bytes()))
             .collect();
-        (fps, n)
+        (fps, n, words)
     }
 }
 
@@ -281,8 +298,10 @@ impl CodeIndex {
         threshold: f32,
         min_tokens: usize,
     ) -> Option<CodeMatch> {
-        let (set, n) = fp.of(text);
-        if n < min_tokens || set.is_empty() {
+        let (set, n, words) = fp.of_with_words(text);
+        // A table of numbers or a list of strings has the same tokens in every repository: it says
+        // nothing about where it came from. Enough different identifiers are needed to judge.
+        if n < min_tokens || words < MIN_WORDS || set.is_empty() {
             return None;
         }
         let mut hits: HashMap<u16, usize> = HashMap::new();
@@ -561,5 +580,30 @@ impl<K: std::hash::Hash + Eq, V> Cache<K, V> {
         }
         // the fingerprints say nothing about the code: no identifier is in the file
         assert!(!bytes.windows(6).any(|w| w == b"Ledger" || w == b"Balanc"));
+    }
+
+    // REQ: QA-10, DET-20 — found by the benchmark: any two tables of numbers have the same tokens, so a
+    // block without enough different identifiers is not judged at all.
+    #[test]
+    fn tables_of_numbers_are_not_a_match() {
+        let table = |seed: u32| {
+            (0..80)
+                .map(|i| format!("    ({}, {}, {}),", i * 7 + seed, i * 13 + seed, i * 3))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let fp = Fingerprinter::new(b"tenant-secret-key");
+        let mut ix = CodeIndex::new(&fp);
+        ix.set_repo(
+            Repo {
+                name: "tables".into(),
+                classification: "closed".into(),
+            },
+            fp.of(&table(1)).0,
+        )
+        .unwrap();
+        // the same table is not "recognized": there is nothing in it to recognize
+        assert!(ix.lookup(&fp, &table(1), 0.5, 30).is_none());
+        assert!(ix.lookup(&fp, &table(9), 0.5, 30).is_none());
     }
 }

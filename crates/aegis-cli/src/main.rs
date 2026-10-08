@@ -107,9 +107,9 @@ enum IndexCmd {
         index: PathBuf,
         #[arg(required = true)]
         paths: Vec<PathBuf>,
-        #[arg(long, default_value_t = 0.8)]
+        #[arg(long, default_value_t = 0.9)]
         threshold: f32,
-        #[arg(long, default_value_t = 80)]
+        #[arg(long, default_value_t = 50)]
         min_tokens: usize,
     },
 }

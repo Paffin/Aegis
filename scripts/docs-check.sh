@@ -43,7 +43,7 @@ has docs/ADMIN.md "хеширование по заголовку" "NFR-05: cons
 has docs/ADMIN.md "Без доступа в интернет" "NFR-08: air-gapped operation"
 
 # QA-09: the quality gates run in CI and block a release
-for g in "aegis-bench -- recall" "aegis-bench -- fp" "aegis-bench -- perf" "aegis-bench -- load" "cargo test --workspace" "scripts/smoke.sh" "scripts/trace.sh" "cargo deny\|cargo-deny-action"; do
+for g in "aegis-bench -- recall" "aegis-bench -- fp" "aegis-bench -- code" "aegis-bench -- perf" "aegis-bench -- load" "cargo test --workspace" "scripts/smoke.sh" "scripts/trace.sh" "cargo deny\|cargo-deny-action"; do
   grep -q -- "$g" .github/workflows/ci.yml || fail "QA-09: CI lacks «$g»"
 done
 echo "ok   QA-09: tests, detection and load gates, smoke, trace and supply chain run in CI"

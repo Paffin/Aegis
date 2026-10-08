@@ -261,7 +261,12 @@ fn hosts_and_addresses_in_every_wrapper() {
             }
         }
     }
-    assert!(missed.is_empty(), "{} not found:\n{}", missed.len(), missed.join("\n"));
+    assert!(
+        missed.is_empty(),
+        "{} not found:\n{}",
+        missed.len(),
+        missed.join("\n")
+    );
 }
 
 #[test]
@@ -269,7 +274,11 @@ fn keys_and_mail_in_every_wrapper() {
     let mut missed = vec![];
     for (kind, value, ty) in [
         ("aws key", "AKIAJ3KQ7P2WXNB5ZT4A", EntityType::Secret),
-        ("github token", "ghp_16C7e42F292c6912E7710c838347Ae178B4a", EntityType::Secret),
+        (
+            "github token",
+            "ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+            EntityType::Secret,
+        ),
         ("email", "ivan.petrov@company.ru", EntityType::Email),
     ] {
         for (name, tpl) in generic_wrappers() {
@@ -283,5 +292,10 @@ fn keys_and_mail_in_every_wrapper() {
             }
         }
     }
-    assert!(missed.is_empty(), "{} not found:\n{}", missed.len(), missed.join("\n"));
+    assert!(
+        missed.is_empty(),
+        "{} not found:\n{}",
+        missed.len(),
+        missed.join("\n")
+    );
 }

@@ -27,6 +27,10 @@ jobs:
         run: |
           cargo run -q --release -p aegis-bench -- recall --n 1000 --min-recall 98
           cargo run -q --release -p aegis-bench -- fp --dir "$HOME/.cargo/registry/src" --samples 0 --max-per-10k 8
+          # QA-10: fragments of an indexed repository are recognized, foreign code is not
+          T=$(ls -d "$HOME"/.cargo/registry/src/*/tokio-1.* | head -1)
+          NEG=$(for d in "$HOME"/.cargo/registry/src/*/*/; do echo "--negative $d"; done)
+          cargo run -q --release -p aegis-bench -- code --closed "$T" $NEG --min-recall 95 --max-false 0.1
           cargo run -q --release -p aegis-bench -- perf --dir "$HOME/.cargo/registry/src" --kb 800 --iterations 15 --max-warm-p95-ms 50
       - name: Demo (README walkthrough keeps working)
         run: scripts/demo.sh

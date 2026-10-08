@@ -135,6 +135,10 @@ task("mail_domain", "hidden", "Оповещения не доходят: адр�
      lambda w: edit(w, "notify.py", "compnay", "company"),
      secrets=("ivan.petrov@company.ru", "ivan.petrov@compnay.ru"))
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bench_tasks  # noqa: E402  tasks 13..50
+
+bench_tasks.register(task, py, edit, clean)
 BY_ID = {t.id: t for t in TASKS}
 
 

@@ -440,10 +440,10 @@ impl SecretDetector {
             xml_attr: re(format!(r#"(?i)(?:key|name)[ \t]*=[ \t]*["'][\w.\-]*{KEYWORDS}[\w.\-]*["'][ \t]+value[ \t]*=[ \t]*["']([^"'\s]{{4,}})["']"#)),
             pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
-            config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
-            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s]){{6,}})"#)),
+            config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#][^\s"']{{5,}})[ \t\r]*$"#)),
+            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s])(?:[^\s"',;)\]}}\\]|\\[^nrt"'\s]){{5,}})"#)),
             prose_plain: re(format!(r#"(?i)(?:^|[\s,;(\[{{"'«])(?:{KEYWORDS})[ \t]+(?:(?:is|are|это|равен|равно|равны)[ \t]+)?([^\s"',;)\]}}»]{{7,}}[^\s"',;)\]}}».])"#)),
-            inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
+            inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+[\p{{L}}\p{{N}}_./\-]+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#][^\s"',;)\]}}]{{5,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
             cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
             basic: re(r"(?i)authorization:\s*basic\s+([A-Za-z0-9+/=]{16,})".into()),
@@ -528,7 +528,9 @@ impl Detector for SecretDetector {
             if !val.chars().any(|c| c.is_ascii_digit())
                 || !val.starts_with(|c: char| c.is_alphanumeric() || "!@#$%^&*?+".contains(c))
                 || val.contains("://")
-                || val.contains('/')
+                || (val.contains('/')
+                    && (val.starts_with(['/', '.', '~'])
+                        || !val.contains(['@', '#', '$', '%', '^', '&', '*', '!', '?', '+'])))
                 || val.contains('`')
                 // a version number (`1.2.3-rc1`) is not a password
                 || (val.starts_with(|c: char| c.is_ascii_digit()) && val.matches('.').count() >= 2)
@@ -2120,6 +2122,45 @@ mod tests {
 
     // REQ: DET-04 — found with Hermes Agent against a real model: its file viewer prefixes lines with
     // `2|`, and the password on such a line went to the provider. Every viewer's numbering counts.
+    // REQ: DET-04 — a `#` inside a password is part of it, and words or a file name may stand between
+    // the keyword and the colon (found by the agent benchmark: a script printed the password of `.env`
+    // and the line went to the provider as it was).
+    #[test]
+    fn password_with_hash_and_words_before_the_colon() {
+        let pw = "p@ss/w0rd#9x";
+        for line in [
+            "Оригинальный пароль из .env: p@ss/w0rd#9x",
+            "Original password from .env: p@ss/w0rd#9x",
+            "пароль из файла config/app.ini: p@ss/w0rd#9x",
+            "PASSWORD=p@ss/w0rd#9x",
+            "password: p@ss/w0rd#9x",
+            "  password = p@ss/w0rd#9x",
+            "the password is p@ss/w0rd#9x",
+            "--password p@ss/w0rd#9x",
+        ] {
+            let got = found(line);
+            assert!(
+                got.iter()
+                    .any(|(ty, v)| *ty == EntityType::Secret && v == pw),
+                "{line}: {got:?}"
+            );
+        }
+        // a comment after the value is not part of it; a path and a plain word are not passwords
+        let got = found("password: Jd8!2jd82k # prod");
+        assert!(got.iter().any(|(_, v)| v == "Jd8!2jd82k"), "{got:?}");
+        for line in [
+            "пароль из /etc/app/config.ini",
+            "the password is in config/app.yml",
+            "password: #comment",
+        ] {
+            assert!(
+                found(line).iter().all(|(ty, _)| *ty != EntityType::Secret),
+                "{line}: {:?}",
+                found(line)
+            );
+        }
+    }
+
     // REQ: DET-30 — names of people the directory does not know, found by the shape of Russian names.
     #[test]
     fn names_in_free_text() {

@@ -12,6 +12,11 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
+      - name: Tools on the runner
+        # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - uses: actions/cache@v4
@@ -22,7 +27,6 @@ jobs:
         # NSS softoken from the distribution, and kryoptic (a token written in Rust) built from a
         # pinned source; the build is cached by the hash of its script
         run: |
-          sudo apt-get install -y -qq libnss3
           echo "AEGIS_TEST_KRYOPTIC=$(scripts/build-kryoptic.sh "$HOME/kryoptic" | tail -1)" >> "$GITHUB_ENV"
           echo "AEGIS_REQUIRE_TOKEN=1" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
@@ -56,6 +60,11 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
+      - name: Tools on the runner
+        # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev
       # prebuilt binaries: the runner has no Docker daemon, so the Docker-based cargo-deny action cannot run
       - uses: taiki-e/install-action@v2
         with:
@@ -97,6 +106,11 @@ jobs:
     runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
+      - name: Tools on the runner
+        # the self-hosted ARM64 image is bare: compiler, openssl headers for kryoptic, python for the scripts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential pkg-config cmake perl curl python3 python3-pip python3-venv libnss3 libssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:

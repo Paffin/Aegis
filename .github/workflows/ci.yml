@@ -11,7 +11,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
       - run: cargo fmt --all -- --check
@@ -42,7 +42,7 @@ jobs:
     # SEC-09: licenses, bans, advisories and sources; a CycloneDX SBOM of the workspace
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
       - uses: rustsec/audit-check@v2
         with:
@@ -59,7 +59,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Helm chart renders
         run: |
           helm lint deploy/helm/aegis --set config.bundle.source=https://example/bundle.json --set 'config.bundle.trustedKeys={00}'
@@ -78,7 +78,7 @@ jobs:
   clients:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Real clients against Aegis and a mock provider
         run: |

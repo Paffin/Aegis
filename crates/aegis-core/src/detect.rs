@@ -229,6 +229,13 @@ pub struct SecretDetector {
     inline_eq: Regex,
     /// `Пароль от УЗ: value`, `пароль - value`: the keyword, up to three words, then `:` or a dash.
     inline_prose: Regex,
+    /// `password=&quot;value&quot;`: a quoted value in HTML-escaped text.
+    quoted_html: Regex,
+    /// `| DB_PASSWORD | value |`: a Markdown table row.
+    table: Regex,
+    /// `<password>value</password>`, `<add key="DbPassword" value="value"/>`.
+    xml_elem: Regex,
+    xml_attr: Regex,
     /// `--password value`, `?token=value`.
     flag: Regex,
     /// `curl -u user:pass`, `sshpass -p pass`, `redis-cli -a pass`, `mysql -ppass`.
@@ -390,11 +397,15 @@ impl SecretDetector {
             ],
             pem: re(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----".into()),
             open_quote: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*(["'])([^"'\n]{{4,}})"#)),
-            quoted: re(format!(r#"(?i){KEYWORDS}[\w\-]*["']?\s*(?::=|=>|[:=])\s*["']([^"'\s]{{4,}})["']"#)),
+            quoted: re(format!(r#"(?i){KEYWORDS}[\w\-]*\\*["']?[\]\)]?\s*(?::=|=>|[:=])\s*\\*["']((?:[^"'\s\\]|\\[^"'\s]){{4,}})\\*["']"#)),
+            quoted_html: re(format!(r#"(?i){KEYWORDS}[\w\-]*\s*[:=]\s*(?:&quot;|&apos;|&\#3[49];)([^\s&<"']{{4,}})"#)),
+            table: re(format!(r#"(?i)\|[ \t]*[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*\|[ \t]*([^\s|]{{6,}})[ \t]*\|"#)),
+            xml_elem: re(format!(r#"(?i)<[\w:.\-]*{KEYWORDS}[\w:.\-]*>[ \t]*([^<\s]{{6,}})[ \t]*</"#)),
+            xml_attr: re(format!(r#"(?i)(?:key|name)[ \t]*=[ \t]*["'][\w.\-]*{KEYWORDS}[\w.\-]*["'][ \t]+value[ \t]*=[ \t]*["']([^"'\s]{{4,}})["']"#)),
             pair: re(format!(r#"(?i)["'][\w.\-]*{KEYWORDS}[\w.\-]*["']\s*,\s*["']([^"'\s]{{4,}})["']"#)),
             kv_lines: re(format!(r#"(?im)^[ \t]*-?[ \t]*(?:name|key):[ \t]*["']?[\w.\-]*{KEYWORDS}[\w.\-]*["']?[ \t]*\r?\n[ \t]*(?:value|default):[ \t]*["']?([^\s"']{{4,}})["']?"#)),
-            config: re(format!(r#"(?im)^[ \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
-            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s]){{6,}})"#)),
+            config: re(format!(r#"(?im)^[\u{{feff}} \t]*{LINE_NO}(?:export[ \t]+)?[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*[:=][ \t]*([^\s"'#]{{6,}})[ \t\r]*$"#)),
+            inline_eq: re(format!(r#"(?i)(?:^|[\s,;(\[{{&?|\\\u{{2502}}\u{{2192}}:+`\u{{feff}}])[\w.\-]*{KEYWORDS}[\w.\-]*[ \t]*=[ \t]*((?:[^\s"',;)\]}}#\\]|\\[^nrt"'\s]){{6,}})"#)),
             inline_prose: re(format!(r#"(?i)(?:^|[\s,;(\[{{])(?:{KEYWORDS})(?:[ \t]+\p{{L}}+){{0,3}}[ \t]*(?::|[ \t][-\u{{2013}}\u{{2014}}])[ \t]+([^\s"',;)\]}}#]{{6,}})"#)),
             flag: re(r#"(?i)(?:--(?:password|passwd|token|secret|api-key)(?:=|[ \t]+)|[?&](?:password|passwd|pwd|token|secret|api_?key|access_?token)=)([^\s"'&)\]>]{6,})"#.into()),
             cli_creds: re(r#"(?i)(?:(?:^|[\s;|&(])(?:-u|--user|--proxy-user)(?:[ \t]+|=)["']?[^\s:"']+:|\bsshpass\s+-p[ \t]*["']?|\bredis-cli\b[^\n|;&]*?\s-a[ \t]+["']?|\bmysql(?:dump|admin)?\b[^\n|;&]*?\s-p["']?)([^\s"']{4,})"#.into()),
@@ -438,6 +449,10 @@ impl Detector for SecretDetector {
             (&self.quoted, true, false),
             (&self.pair, true, false),
             (&self.kv_lines, true, false),
+            (&self.quoted_html, true, false),
+            (&self.xml_attr, true, false),
+            (&self.table, false, true),
+            (&self.xml_elem, false, true),
             (&self.config, false, true),
             (&self.inline_eq, false, true),
             (&self.inline_prose, false, true),

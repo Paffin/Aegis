@@ -380,6 +380,10 @@ impl AppState {
 
     /// NFR-09, CFG-04: with a bundle configured, no valid bundle means no traffic.
     pub fn readiness(&self) -> Result<(), String> {
+        // CFG-07: a key in an HSM that stopped answering means requests cannot be pseudonymized
+        if !self.engine.load().keys.healthy() {
+            return Err("ключ в HSM недоступен".into());
+        }
         if !self.bundle_required {
             return Ok(());
         }

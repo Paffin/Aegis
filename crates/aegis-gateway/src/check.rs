@@ -4,8 +4,10 @@
 #![allow(clippy::print_stdout)]
 
 use crate::bundle_loader::{apply, fetch, parse_trusted, Secrets, Source};
-use crate::config::{secret, ProviderKeys, ServerConfig};
+use crate::config::{ProviderKeys, ServerConfig};
 use crate::server::{now_unix, AppState};
+use aegis_core::crypto::{KeyPair, Prf};
+use aegis_hsm::{KeySource, Pkcs11Key};
 
 struct Report {
     failed: bool,
@@ -50,6 +52,46 @@ fn shown(url: &str) -> String {
     }
 }
 
+/// One of the two keys: where it comes from and whether it can be used. A key in an HSM is opened,
+/// which checks the module, the token, the PIN and the key object, and timed. Neither a key nor the
+/// PIN is printed.
+fn check_key(r: &mut Report, name: &'static str) -> Option<KeySource> {
+    match aegis_hsm::spec_of(name) {
+        Some(Err(e)) => {
+            r.fail(e);
+            None
+        }
+        Some(Ok(spec)) => match Pkcs11Key::open(&spec) {
+            Ok(k) => {
+                let timing = match k.measure(25) {
+                    Ok(d) => format!("HMAC через токен {} мкс", d.as_micros()),
+                    Err(e) => format!("HMAC через токен не вычислен: {e}"),
+                };
+                if !k.healthy() {
+                    r.fail(format_args!("{name}_PKCS11: {}; {timing}", k.info()));
+                } else {
+                    r.ok(format_args!(
+                        "{name}_PKCS11: {}; {timing}; PIN принят, ключ не покидает токен",
+                        k.info()
+                    ));
+                }
+                Some(KeySource::Hsm(k))
+            }
+            Err(e) => {
+                r.fail(format_args!("{name}_PKCS11: {e}"));
+                None
+            }
+        },
+        None => match aegis_core::secrets::read(name) {
+            Ok(b) => Some(KeySource::Bytes(zeroize::Zeroizing::new(b))),
+            Err(_) => {
+                r.fail(format_args!("{name} не задан"));
+                None
+            }
+        },
+    }
+}
+
 /// Returns `true` when nothing is wrong. Keys and values are never printed.
 pub async fn run(path: &str) -> bool {
     let mut r = Report { failed: false };
@@ -67,44 +109,59 @@ pub async fn run(path: &str) -> bool {
         }
     };
 
-    // secrets (CFG-05, SEC-03)
-    let k_t = secret("AEGIS_K_TENANT");
-    let k_audit = secret("AEGIS_K_AUDIT");
+    // secrets (CFG-05, CFG-07, SEC-03)
+    let k_t = check_key(&mut r, "AEGIS_K_TENANT");
+    let k_audit = check_key(&mut r, "AEGIS_K_AUDIT");
     match (&k_t, &k_audit) {
-        (Ok(t), Ok(a)) if t.len() >= 16 && a.len() >= 16 => {
+        (Some(KeySource::Bytes(t)), Some(KeySource::Bytes(a)))
+            if t.len() >= 16 && a.len() >= 16 =>
+        {
             r.ok("AEGIS_K_TENANT и AEGIS_K_AUDIT заданы, не короче 16 байт");
             if t == a {
                 r.fail("AEGIS_K_TENANT и AEGIS_K_AUDIT совпадают: ключ аудита должен быть другим");
             }
         }
-        (Ok(_), Ok(_)) => r.fail("AEGIS_K_TENANT или AEGIS_K_AUDIT короче 16 байт"),
-        (t, a) => {
-            if t.is_err() {
-                r.fail("AEGIS_K_TENANT не задан");
-            }
-            if a.is_err() {
-                r.fail("AEGIS_K_AUDIT не задан");
+        _ => {
+            // (a key that failed was reported by `check_key`)
+            for (name, k) in [("AEGIS_K_TENANT", &k_t), ("AEGIS_K_AUDIT", &k_audit)] {
+                if let Some(KeySource::Bytes(b)) = k {
+                    if b.len() < 16 {
+                        r.fail(format_args!("{name} короче 16 байт"));
+                    }
+                }
             }
         }
     }
+    // one key object for both would make the audit hash a function of the pseudonym key
+    if let (Some(Ok(t)), Some(Ok(a))) = (
+        aegis_hsm::spec_of("AEGIS_K_TENANT"),
+        aegis_hsm::spec_of("AEGIS_K_AUDIT"),
+    ) {
+        if t.identity() == a.identity() {
+            r.fail("AEGIS_K_TENANT_PKCS11 и AEGIS_K_AUDIT_PKCS11 указывают на один ключ в токене: ключ аудита должен быть другим");
+        }
+    }
 
-    // a key file that others can read is not a protected key (CFG-07)
-    for name in ["AEGIS_K_TENANT", "AEGIS_K_AUDIT"] {
+    // a key file or a PIN file that others can read is not a protected key (CFG-07)
+    for name in ["AEGIS_K_TENANT", "AEGIS_K_AUDIT", "AEGIS_HSM_PIN"] {
         if let Some(p) = aegis_core::secrets::file_mode_problem(name) {
             r.fail(format_args!("{name}_FILE: {p}"));
         }
     }
 
     // providers and their keys (IAM-02)
-    let (kt, ka) = (
-        k_t.as_ref().ok().cloned().unwrap_or_else(|| vec![0; 32]),
-        k_audit
-            .as_ref()
-            .ok()
-            .cloned()
-            .unwrap_or_else(|| vec![1; 32]),
-    );
-    let state: Option<AppState> = match cfg.build(&kt, &ka, ProviderKeys::from_env()) {
+    let placeholder = |fill: u8| -> std::sync::Arc<dyn Prf> {
+        std::sync::Arc::new(aegis_core::crypto::HmacPrf::new(&[fill; 32]))
+    };
+    let keys = KeyPair {
+        k_t: k_t
+            .map(KeySource::into_prf)
+            .unwrap_or_else(|| placeholder(0)),
+        k_audit: k_audit
+            .map(KeySource::into_prf)
+            .unwrap_or_else(|| placeholder(1)),
+    };
+    let state: Option<AppState> = match cfg.build_keys(&keys, ProviderKeys::from_env()) {
         Ok(st) => {
             for (name, up) in [
                 ("Anthropic", &st.anthropic),
@@ -165,10 +222,7 @@ pub async fn run(path: &str) -> bool {
             Err(e) => r.fail(format_args!("trusted_keys: {e}")),
             Ok(trusted) => {
                 let src = Source::parse(&b.source);
-                let secrets = Secrets {
-                    k_t: kt.clone(),
-                    k_audit: ka.clone(),
-                };
+                let secrets: Secrets = keys.clone();
                 match fetch(&st.http, &src).await {
                     Err(e) => {
                         r.fail(format_args!("бандл {}: {e}", shown(&b.source)));

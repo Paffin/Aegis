@@ -5,7 +5,7 @@
 
 use crate::engine::Engine;
 use crate::server::{AppState, Auth, Principal, Upstream};
-use aegis_core::crypto::TenantKeys;
+use aegis_core::crypto::{KeyPair, TenantKeys};
 use aegis_core::detect::{DetectConfig, Dictionary};
 use aegis_core::types::EntityType;
 use serde::Deserialize;
@@ -275,6 +275,13 @@ pub fn secret(name: &'static str) -> Result<Vec<u8>, ConfigError> {
     secret_named(name).map_err(|_| ConfigError::Missing(name))
 }
 
+/// `AEGIS_K_TENANT` and `AEGIS_K_AUDIT` from wherever they are configured: bytes, a file, a command,
+/// or a key object in an HSM (`AEGIS_K_TENANT_PKCS11`, CFG-07). Without them the gateway does not
+/// start (NFR-09).
+pub fn load_keys() -> Result<KeyPair, ConfigError> {
+    aegis_hsm::load_pair().map_err(ConfigError::Invalid)
+}
+
 /// [`secret`] for a name that comes from the configuration.
 fn secret_named(name: &str) -> Result<Vec<u8>, ()> {
     aegis_core::secrets::read(name).map_err(|_| ())
@@ -387,6 +394,16 @@ impl ServerConfig {
                 "K_t and K_audit must be at least 16 bytes".into(),
             ));
         }
+        self.build_keys(&KeyPair::from_bytes(k_t, k_audit), provider_keys)
+    }
+
+    /// [`build`](Self::build) with keys that may live in an HSM (CFG-07). The length of a key in a
+    /// token is checked when it is opened.
+    pub fn build_keys(
+        &self,
+        keys: &KeyPair,
+        provider_keys: ProviderKeys,
+    ) -> Result<AppState, ConfigError> {
         let mut detect = DetectConfig {
             internal_zones: self.internal_zones.clone(),
             ..Default::default()
@@ -429,22 +446,25 @@ impl ServerConfig {
             }
             crate::bundle_loader::parse_trusted(&b.trusted_keys).map_err(ConfigError::Invalid)?;
         }
-        let keys = TenantKeys::from_secrets(&self.tenant, k_t, k_audit);
+        let tenant_keys = TenantKeys::from_pair(&self.tenant, keys);
         if self.detect_cache_mb == 0 || self.detect_budget_ms == 0 {
             return Err(ConfigError::Invalid(
                 "detect_cache_mb and detect_budget_ms must be at least 1".into(),
             ));
         }
         let code = match &self.code_index {
-            Some(c) => {
-                Some(crate::code_index::CodeGuard::load(c, k_t).map_err(ConfigError::Invalid)?)
-            }
+            Some(c) => Some(
+                crate::code_index::CodeGuard::load_with(c, &*keys.k_t)
+                    .map_err(ConfigError::Invalid)?,
+            ),
             None => None,
         };
-        let engine = Engine::new(keys, detect, dict).with_code(code).with_limits(
-            self.detect_cache_mb.saturating_mul(1 << 20),
-            std::time::Duration::from_millis(self.detect_budget_ms),
-        );
+        let engine = Engine::new(tenant_keys, detect, dict)
+            .with_code(code)
+            .with_limits(
+                self.detect_cache_mb.saturating_mul(1 << 20),
+                std::time::Duration::from_millis(self.detect_budget_ms),
+            );
         let vk: HashMap<String, Principal> = self
             .virtual_keys
             .iter()

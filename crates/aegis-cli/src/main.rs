@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod hsm;
 mod index;
 mod scan;
 
@@ -81,10 +82,44 @@ enum Cmd {
         cmd: VkeyCmd,
     },
     /// Fingerprint index of closed source code (DET-20, DET-21). The tenant key is read from
-    /// AEGIS_K_TENANT or AEGIS_K_TENANT_FILE.
+    /// AEGIS_K_TENANT, AEGIS_K_TENANT_FILE, AEGIS_K_TENANT_COMMAND or AEGIS_K_TENANT_PKCS11.
     Index {
         #[command(subcommand)]
         cmd: IndexCmd,
+    },
+    /// Keys in an HSM over PKCS#11 (CFG-07): create the key object, check the token.
+    Hsm {
+        #[command(subcommand)]
+        cmd: HsmCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum HsmCmd {
+    /// Create a non-extractable HMAC key in the token that NAME_PKCS11 (or --spec) names. The token
+    /// generates the key itself, or with --import takes the bytes of the key as it is configured
+    /// today (NAME, NAME_FILE, NAME_COMMAND), once, so that pseudonyms and the code index stay valid.
+    /// The PIN comes from AEGIS_HSM_PIN, AEGIS_HSM_PIN_FILE or AEGIS_HSM_PIN_COMMAND.
+    Init {
+        /// AEGIS_K_TENANT or AEGIS_K_AUDIT.
+        name: String,
+        /// `module=…;token=…;label=…` instead of the NAME_PKCS11 variable.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Length of the generated key in bytes.
+        #[arg(long, default_value_t = 32)]
+        bytes: usize,
+        /// Import the current key instead of generating one.
+        #[arg(long)]
+        import: bool,
+    },
+    /// Open the keys the way the gateway does (module, token, PIN, key object, non-extractable) and
+    /// time one HMAC through the token. Exit status 1 if anything is wrong. Prints neither PIN nor key.
+    Check {
+        /// Key names (default: those with NAME_PKCS11 set).
+        names: Vec<String>,
+        #[arg(long)]
+        spec: Option<String>,
     },
 }
 
@@ -270,6 +305,21 @@ fn now() -> i64 {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
+        Cmd::Hsm { cmd } => match cmd {
+            HsmCmd::Init {
+                name,
+                spec,
+                bytes,
+                import,
+            } => hsm::init(&name, spec.as_deref(), bytes, import),
+            HsmCmd::Check { names, spec } => {
+                if hsm::check(&names, spec.as_deref())? {
+                    Ok(())
+                } else {
+                    std::process::exit(1)
+                }
+            }
+        },
         Cmd::Index { cmd } => match cmd {
             IndexCmd::Build { repos, out, update } => index::build(&repos, &out, update),
             IndexCmd::Info { index } => index::info(&index),

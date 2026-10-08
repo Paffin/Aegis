@@ -322,6 +322,7 @@ pub fn transform_request(
 
     // Salt (PSE-03)
     let fu: Vec<&str> = first_user.iter().map(|s| s.as_str()).collect();
+    let key_mark = engine.keys.fault_mark();
     let (salt, _) = derive_salt(
         &engine.keys,
         &SaltInput {
@@ -337,6 +338,7 @@ pub fn transform_request(
         reroute: None,
         notice: Default::default(),
         guard: false,
+        key_mark,
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

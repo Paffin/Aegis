@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/aegis-core", "crates/aegis-gateway", "crates/aegis-cli", "crates/aegis-bench", "crates/aegis-mcp", "crates/aegis-guard"]
+members = ["crates/aegis-core", "crates/aegis-gateway", "crates/aegis-cli", "crates/aegis-bench", "crates/aegis-mcp", "crates/aegis-guard", "crates/aegis-hsm"]
 
 [workspace.package]
 version = "0.1.0"
@@ -32,7 +32,9 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 getrandom = "0.2"
 rustix = { version = "0.38", features = ["process"] }
 clap = { version = "4", features = ["derive"] }
+cryptoki = "0.12"
 aegis-core = { path = "crates/aegis-core" }
+aegis-hsm = { path = "crates/aegis-hsm" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

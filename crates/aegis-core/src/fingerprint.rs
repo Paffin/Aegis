@@ -8,9 +8,11 @@
 //! changed. The index stores the fingerprints, keyed with HMAC so that it is not a dictionary of
 //! guessable token runs, and the names of the repositories: no code.
 
+use crate::crypto::{HmacPrf, Prf};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::{BTreeSet, HashMap};
+use zeroize::Zeroizing;
 
 /// Tokens in one hashed run.
 pub const K: usize = 5;
@@ -95,17 +97,24 @@ fn fnv(bytes: &[u8], mut h: u64) -> u64 {
 
 /// Keys the fingerprints of one deployment.
 pub struct Fingerprinter {
-    key: [u8; 32],
+    key: Zeroizing<[u8; 32]>,
 }
 
 impl Fingerprinter {
     /// `secret` is the tenant key; the index key is derived from it, so an index is useless
     /// without it and a leaked index does not leak the tenant key.
     pub fn new(secret: &[u8]) -> Self {
-        let mut m = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC takes any key length");
-        m.update(b"aegis-code-index-v1");
+        Self::from_prf(&HmacPrf::new(secret))
+    }
+
+    /// The same derivation with a tenant key that may live in an HSM (CFG-07). The master key
+    /// stays where it is: it signs one fixed label once, at start. The 32-byte result is the *index
+    /// key* and is held in memory, because the index needs one HMAC per fingerprinted shingle,
+    /// millions per repository, and a round trip to a token for each would take hours. Knowing it
+    /// lets one test guesses against an index; it reveals neither the tenant key nor a pseudonym.
+    pub fn from_prf(master: &dyn Prf) -> Self {
         Self {
-            key: m.finalize().into_bytes().into(),
+            key: Zeroizing::new(master.mac_raw(b"aegis-code-index-v1")),
         }
     }
 
@@ -116,7 +125,7 @@ impl Fingerprinter {
     }
 
     fn keyed(&self, data: &[u8]) -> u64 {
-        let mut m = Hmac::<Sha256>::new_from_slice(&self.key).expect("HMAC takes any key length");
+        let mut m = Hmac::<Sha256>::new_from_slice(&*self.key).expect("HMAC takes any key length");
         m.update(data);
         let d = m.finalize().into_bytes();
         u64::from_le_bytes(d[..8].try_into().expect("8 bytes"))
@@ -466,6 +475,19 @@ impl<K: std::hash::Hash + Eq, V> Cache<K, V> {
     }
 
     // REQ: DET-20
+    // REQ: CFG-07 — an index key derived through a `Prf` (a key in an HSM) is the one derived from the bytes.
+    #[test]
+    fn the_index_key_from_a_prf_is_the_one_from_the_bytes() {
+        let secret = b"tenant-secret-key";
+        let a = Fingerprinter::new(secret);
+        let b = Fingerprinter::from_prf(&crate::crypto::HmacPrf::new(secret));
+        let code =
+            "fn main() { let alpha = beta(gamma, delta); epsilon(alpha, zeta, eta, theta); }";
+        assert_eq!(a.check(), b.check());
+        assert_eq!(a.of(code), b.of(code));
+        assert_ne!(a.check(), Fingerprinter::new(b"another key").check());
+    }
+
     #[test]
     fn tokens_drop_comments_and_literal_contents() {
         let t = tokens("x := 42 // note\n/* block */ s = \"a b\" # py\ny = 'q' #[derive]");

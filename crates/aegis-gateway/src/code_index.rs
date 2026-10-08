@@ -1,6 +1,7 @@
 //! REQ: DET-20, DET-21 — the gateway side of the fingerprint index: a block of code that looks
 //! like a closed repository is handled by the policy of that repository's classification.
 
+use aegis_core::crypto::{HmacPrf, Prf};
 use aegis_core::fingerprint::{CodeIndex, CodeMatch, Fingerprinter};
 use arc_swap::ArcSwap;
 use serde::Deserialize;
@@ -82,10 +83,20 @@ pub struct CodeGuard {
 
 impl CodeGuard {
     pub fn load(cfg: &CodeIndexConfig, tenant_key: &[u8]) -> Result<Arc<Self>, String> {
+        Self::load_with(cfg, &HmacPrf::new(tenant_key))
+    }
+
+    /// [`load`](Self::load) with a tenant key that may live in an HSM (CFG-07): the index key is
+    /// derived from it once, here.
+    pub fn load_with(cfg: &CodeIndexConfig, tenant_key: &dyn Prf) -> Result<Arc<Self>, String> {
         if !(0.05..=1.0).contains(&cfg.threshold) {
             return Err("code_index.threshold: от 0,05 до 1".into());
         }
-        let fp = Fingerprinter::new(tenant_key);
+        let faults = tenant_key.faults();
+        let fp = Fingerprinter::from_prf(tenant_key);
+        if tenant_key.faults() != faults {
+            return Err("code_index: ключ в HSM не вычислил ключ индекса".into());
+        }
         let bytes =
             std::fs::read(&cfg.path).map_err(|e| format!("code_index {}: {e}", cfg.path))?;
         let index = CodeIndex::from_bytes(&bytes, &fp)

@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="486" viewBox="0 0 1040 486" role="img" aria-label="Подстановка по месту назначения">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#94a3b8"/></marker></defs>
+<style>
+text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #cbd5e1; font-size: 15px; }
+.h { font-size: 22px; font-weight: 700; fill: #f1f5f9; }
+.t { font-size: 17px; font-weight: 700; fill: #f1f5f9; }
+.s { font-size: 14px; fill: #94a3b8; }
+.n { font-size: 40px; font-weight: 800; fill: #f1f5f9; }
+.m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 13.5px; fill: #cbd5e1; }
+.b { font-weight: 700; }
+</style>
+<rect width="1040" height="486" rx="18" fill="#0b1220"/>
+<text x="32" y="44" class="h">Куда можно вернуть настоящее значение</text>
+<text x="32" y="66" class="s">Политика по умолчанию (RST-03): тип значения × место, куда его собирается записать или отправить агент</text>
+<text x="258" y="106" class="t">Инфраструктура</text>
+<text x="508" y="106" class="t">ПДн и корпоративное</text>
+<text x="758" y="106" class="t">Секреты</text>
+<rect x="24" y="122" width="992" height="36" rx="8" fill="#111827"/>
+<text x="40" y="147">текст ответа</text>
+<rect x="258" y="128" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="328.0" y="146.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="508" y="128" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="578.0" y="146.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="758" y="128" width="140" height="26" rx="13" fill="#312e81"/>
+<text x="828.0" y="146.0" text-anchor="middle" style="fill:#a5b4fc;font-size:13.5px;font-weight:700">маркер</text>
+<text x="40" y="187">запись файла</text>
+<rect x="258" y="168" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="328.0" y="186.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="508" y="168" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="578.0" y="186.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="758" y="168" width="140" height="26" rx="13" fill="#312e81"/>
+<text x="828.0" y="186.0" text-anchor="middle" style="fill:#a5b4fc;font-size:13.5px;font-weight:700">в тот же файл</text>
+<rect x="24" y="202" width="992" height="36" rx="8" fill="#111827"/>
+<text x="40" y="227">чтение файла</text>
+<rect x="258" y="208" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="328.0" y="226.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="508" y="208" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="578.0" y="226.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="758" y="208" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="828.0" y="226.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<text x="40" y="267">локальная команда</text>
+<rect x="258" y="248" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="328.0" y="266.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="508" y="248" width="140" height="26" rx="13" fill="#713f12"/>
+<text x="578.0" y="266.0" text-anchor="middle" style="fill:#fcd34d;font-size:13.5px;font-weight:700">спросить</text>
+<rect x="758" y="248" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="828.0" y="266.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<rect x="24" y="282" width="992" height="36" rx="8" fill="#111827"/>
+<text x="40" y="307">сетевая команда</text>
+<rect x="258" y="288" width="140" height="26" rx="13" fill="#1e3a8a"/>
+<text x="328.0" y="306.0" text-anchor="middle" style="fill:#93c5fd;font-size:13.5px;font-weight:700">только внутри</text>
+<rect x="508" y="288" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="578.0" y="306.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<rect x="758" y="288" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="828.0" y="306.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<text x="40" y="347">WebFetch, WebSearch</text>
+<rect x="258" y="328" width="140" height="26" rx="13" fill="#1e3a8a"/>
+<text x="328.0" y="346.0" text-anchor="middle" style="fill:#93c5fd;font-size:13.5px;font-weight:700">только внутри</text>
+<rect x="508" y="328" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="578.0" y="346.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<rect x="758" y="328" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="828.0" y="346.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<rect x="24" y="362" width="992" height="36" rx="8" fill="#111827"/>
+<text x="40" y="387">подагент</text>
+<rect x="258" y="368" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="328.0" y="386.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="508" y="368" width="140" height="26" rx="13" fill="#14532d"/>
+<text x="578.0" y="386.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">вернуть</text>
+<rect x="758" y="368" width="140" height="26" rx="13" fill="#334155"/>
+<text x="828.0" y="386.0" text-anchor="middle" style="fill:#94a3b8;font-size:13.5px;font-weight:700">скрыто</text>
+<text x="40" y="427">сервер MCP</text>
+<rect x="258" y="408" width="140" height="26" rx="13" fill="#1e3a8a"/>
+<text x="328.0" y="426.0" text-anchor="middle" style="fill:#93c5fd;font-size:13.5px;font-weight:700">только внутри</text>
+<rect x="508" y="408" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="578.0" y="426.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<rect x="758" y="408" width="140" height="26" rx="13" fill="#7f1d1d"/>
+<text x="828.0" y="426.0" text-anchor="middle" style="fill:#fca5a5;font-size:13.5px;font-weight:700">отказ</text>
+<text x="40" y="468" class="s">«спросить» работает при установленном aegis-guard и действительном токене устройства; без него локальная команда с ПДн отклоняется.</text>
+</svg>

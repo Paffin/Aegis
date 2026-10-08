@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="396" viewBox="0 0 1040 396" role="img" aria-label="Четыре точки контроля">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#94a3b8"/></marker></defs>
+<style>
+text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #cbd5e1; font-size: 15px; }
+.h { font-size: 22px; font-weight: 700; fill: #f1f5f9; }
+.t { font-size: 17px; font-weight: 700; fill: #f1f5f9; }
+.s { font-size: 14px; fill: #94a3b8; }
+.n { font-size: 40px; font-weight: 800; fill: #f1f5f9; }
+.m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 13.5px; fill: #cbd5e1; }
+.b { font-weight: 700; }
+</style>
+<rect width="1040" height="396" rx="18" fill="#0b1220"/>
+<text x="32" y="44" class="h">Четыре точки контроля</text>
+<text x="32" y="66" class="s">Каждая работает отдельно; вместе они закрывают то, что видит модель, что она делает и куда уходят данные</text>
+<rect x="28" y="90" width="236" height="276" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="28" y="90" width="236" height="5" rx="2" fill="url(#g)"/>
+<text x="46" y="128" class="t">LLM Gateway</text>
+<text x="46" y="150" class="m" style="fill:#94a3b8">aegis-gateway</text>
+<text x="46" y="184">Anthropic, OpenAI, Gemini,</text>
+<text x="46" y="204">китайские и локальные</text>
+<text x="46" y="224">модели</text>
+<text x="46" y="252">Подстановка по месту</text>
+<text x="46" y="272">назначения</text>
+<text x="46" y="300">Правило трёх условий, аудит</text>
+<rect x="46" y="326" width="77" height="26" rx="13" fill="#14532d"/>
+<text x="84.5" y="344.0" text-anchor="middle" style="fill:#86efac;font-size:13.5px;font-weight:700">готово</text>
+<rect x="276" y="90" width="236" height="276" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="276" y="90" width="236" height="5" rx="2" fill="url(#g)"/>
+<text x="294" y="128" class="t">Agent Guard</text>
+<text x="294" y="150" class="m" style="fill:#94a3b8">aegis-guard</text>
+<text x="294" y="184">Проверка вызова на машине</text>
+<text x="294" y="204">разработчика</text>
+<text x="294" y="232">Подтверждение для ПДн</text>
+<text x="294" y="260">Настройки, которые нельзя</text>
+<text x="294" y="280">отключить; песочница</text>
+<text x="294" y="300">клиента</text>
+<rect x="294" y="326" width="215" height="26" rx="13" fill="#713f12"/>
+<text x="401.5" y="344.0" text-anchor="middle" style="fill:#fcd34d;font-size:13.5px;font-weight:700">готово для Claude Code</text>
+<rect x="524" y="90" width="236" height="276" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="524" y="90" width="236" height="5" rx="2" fill="url(#g)"/>
+<text x="542" y="128" class="t">MCP Proxy</text>
+<text x="542" y="150" class="m" style="fill:#94a3b8">aegis-mcp</text>
+<text x="542" y="184">Белый список инструментов</text>
+<text x="542" y="212">Ограничения аргументов, SQL</text>
+<text x="542" y="232">только чтение</text>
+<text x="542" y="260">Минимизация результатов</text>
+<rect x="542" y="326" width="189" height="26" rx="13" fill="#713f12"/>
+<text x="636.5" y="344.0" text-anchor="middle" style="fill:#fcd34d;font-size:13.5px;font-weight:700">без боевых серверов</text>
+<rect x="772" y="90" width="236" height="276" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="772" y="90" width="236" height="5" rx="2" fill="url(#g)"/>
+<text x="790" y="128" class="t">Egress Control</text>
+<text x="790" y="150" class="m" style="fill:#94a3b8">deploy/egress</text>
+<text x="790" y="184">Правила периметра:</text>
+<text x="790" y="204">nftables, squid, RPZ</text>
+<text x="790" y="232">Блок клиентов, которые</text>
+<text x="790" y="252">нельзя направить в gateway</text>
+<text x="790" y="280">Shadow AI по логам: не</text>
+<text x="790" y="300">начато</text>
+<rect x="790" y="326" width="94" height="26" rx="13" fill="#713f12"/>
+<text x="837.0" y="344.0" text-anchor="middle" style="fill:#fcd34d;font-size:13.5px;font-weight:700">частично</text>
+</svg>

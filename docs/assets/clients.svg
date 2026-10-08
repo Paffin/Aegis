@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="594" viewBox="0 0 1040 594" role="img" aria-label="Проверка клиентов">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#94a3b8"/></marker></defs>
+<style>
+text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #cbd5e1; font-size: 15px; }
+.h { font-size: 22px; font-weight: 700; fill: #f1f5f9; }
+.t { font-size: 17px; font-weight: 700; fill: #f1f5f9; }
+.s { font-size: 14px; fill: #94a3b8; }
+.n { font-size: 40px; font-weight: 800; fill: #f1f5f9; }
+.m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 13.5px; fill: #cbd5e1; }
+.b { font-weight: 700; }
+</style>
+<rect width="1040" height="594" rx="18" fill="#0b1220"/>
+<text x="32" y="44" class="h">Проверено настоящими клиентами</text>
+<text x="32" y="66" class="s">Каждый клиент: подставной провайдер, затем настоящая модель через OpenRouter. Во всех запусках у провайдера нет ни хоста, ни пароля.</text>
+<rect x="28" y="88" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="42" y="116" class="t">Claude Code</text>
+<text x="258" y="116" class="s" text-anchor="end">2.1</text>
+<text x="42" y="136" class="s">Anthropic</text>
+<text x="42" y="164" class="t" style="fill:#86efac">✔ 38</text>
+<text x="42" y="180" class="s">подставной</text>
+<text x="146" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="146" y="180" class="s">команда</text>
+<text x="212" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="212" y="180" class="s">файл</text>
+<rect x="280" y="88" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="294" y="116" class="t">Codex CLI</text>
+<text x="510" y="116" class="s" text-anchor="end">0.160</text>
+<text x="294" y="136" class="s">Responses</text>
+<text x="294" y="164" class="t" style="fill:#86efac">✔ 9</text>
+<text x="294" y="180" class="s">подставной</text>
+<text x="398" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="398" y="180" class="s">команда</text>
+<text x="464" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="464" y="180" class="s">файл</text>
+<rect x="532" y="88" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="546" y="116" class="t">Qwen Code</text>
+<text x="762" y="116" class="s" text-anchor="end">0.25</text>
+<text x="546" y="136" class="s">Chat</text>
+<text x="546" y="164" class="t" style="fill:#86efac">✔ 8</text>
+<text x="546" y="180" class="s">подставной</text>
+<text x="650" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="650" y="180" class="s">команда</text>
+<text x="716" y="164" class="t" style="fill:#86efac">✔</text>
+<text x="716" y="180" class="s">файл</text>
+<rect x="784" y="88" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="798" y="116" class="t">Gemini CLI</text>
+<text x="1014" y="116" class="s" text-anchor="end">0.63</text>
+<text x="798" y="136" class="s">Gemini</text>
+<text x="798" y="164" class="t" style="fill:#86efac">✔ 10</text>
+<text x="798" y="180" class="s">подставной</text>
+<text x="902" y="164" class="t" style="fill:#94a3b8">—</text>
+<text x="902" y="180" class="s">команда</text>
+<text x="968" y="164" class="t" style="fill:#94a3b8">—</text>
+<text x="968" y="180" class="s">файл</text>
+<rect x="28" y="198" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="42" y="226" class="t">OpenCode</text>
+<text x="258" y="226" class="s" text-anchor="end">1.18</text>
+<text x="42" y="246" class="s">Chat</text>
+<text x="42" y="274" class="t" style="fill:#86efac">✔ 8</text>
+<text x="42" y="290" class="s">подставной</text>
+<text x="146" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="146" y="290" class="s">команда</text>
+<text x="212" y="274" class="t" style="fill:#fcd34d">✘</text>
+<text x="212" y="290" class="s">файл</text>
+<rect x="280" y="198" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="294" y="226" class="t">Aider</text>
+<text x="510" y="226" class="s" text-anchor="end">0.86</text>
+<text x="294" y="246" class="s">Chat</text>
+<text x="294" y="274" class="t" style="fill:#86efac">✔ 6</text>
+<text x="294" y="290" class="s">подставной</text>
+<text x="398" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="398" y="290" class="s">команда</text>
+<text x="464" y="274" class="t" style="fill:#fcd34d">✘</text>
+<text x="464" y="290" class="s">файл</text>
+<rect x="532" y="198" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="546" y="226" class="t">Continue</text>
+<text x="762" y="226" class="s" text-anchor="end">1.5</text>
+<text x="546" y="246" class="s">Chat</text>
+<text x="546" y="274" class="t" style="fill:#86efac">✔ 8</text>
+<text x="546" y="290" class="s">подставной</text>
+<text x="650" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="650" y="290" class="s">команда</text>
+<text x="716" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="716" y="290" class="s">файл</text>
+<rect x="784" y="198" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="798" y="226" class="t">Cline</text>
+<text x="1014" y="226" class="s" text-anchor="end">3.0</text>
+<text x="798" y="246" class="s">Chat</text>
+<text x="798" y="274" class="t" style="fill:#86efac">✔ 9</text>
+<text x="798" y="290" class="s">подставной</text>
+<text x="902" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="902" y="290" class="s">команда</text>
+<text x="968" y="274" class="t" style="fill:#86efac">✔</text>
+<text x="968" y="290" class="s">файл</text>
+<rect x="28" y="308" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="42" y="336" class="t">Hermes Agent</text>
+<text x="258" y="336" class="s" text-anchor="end">0.19</text>
+<text x="42" y="356" class="s">Chat</text>
+<text x="42" y="384" class="t" style="fill:#86efac">✔ 9</text>
+<text x="42" y="400" class="s">подставной</text>
+<text x="146" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="146" y="400" class="s">команда</text>
+<text x="212" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="212" y="400" class="s">файл</text>
+<rect x="280" y="308" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="294" y="336" class="t">OpenClaw</text>
+<text x="510" y="336" class="s" text-anchor="end">2026.6</text>
+<text x="294" y="356" class="s">Chat</text>
+<text x="294" y="384" class="t" style="fill:#86efac">✔ 9</text>
+<text x="294" y="400" class="s">подставной</text>
+<text x="398" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="398" y="400" class="s">команда</text>
+<text x="464" y="384" class="t" style="fill:#fcd34d">✘</text>
+<text x="464" y="400" class="s">файл</text>
+<rect x="532" y="308" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="546" y="336" class="t">Crush</text>
+<text x="762" y="336" class="s" text-anchor="end">0.97</text>
+<text x="546" y="356" class="s">Chat</text>
+<text x="546" y="384" class="t" style="fill:#86efac">✔ 9</text>
+<text x="546" y="400" class="s">подставной</text>
+<text x="650" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="650" y="400" class="s">команда</text>
+<text x="716" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="716" y="400" class="s">файл</text>
+<rect x="784" y="308" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="798" y="336" class="t">Kilo Code</text>
+<text x="1014" y="336" class="s" text-anchor="end">7.8</text>
+<text x="798" y="356" class="s">Chat</text>
+<text x="798" y="384" class="t" style="fill:#86efac">✔ 9</text>
+<text x="798" y="400" class="s">подставной</text>
+<text x="902" y="384" class="t" style="fill:#86efac">✔</text>
+<text x="902" y="400" class="s">команда</text>
+<text x="968" y="384" class="t" style="fill:#fcd34d">✘</text>
+<text x="968" y="400" class="s">файл</text>
+<rect x="28" y="418" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="42" y="446" class="t">Pi</text>
+<text x="258" y="446" class="s" text-anchor="end">0.73</text>
+<text x="42" y="466" class="s">Chat</text>
+<text x="42" y="494" class="t" style="fill:#86efac">✔ 9</text>
+<text x="42" y="510" class="s">подставной</text>
+<text x="146" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="146" y="510" class="s">команда</text>
+<text x="212" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="212" y="510" class="s">файл</text>
+<rect x="280" y="418" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="294" y="446" class="t">Goose</text>
+<text x="510" y="446" class="s" text-anchor="end">1.53</text>
+<text x="294" y="466" class="s">Chat</text>
+<text x="294" y="494" class="t" style="fill:#86efac">✔ 9</text>
+<text x="294" y="510" class="s">подставной</text>
+<text x="398" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="398" y="510" class="s">команда</text>
+<text x="464" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="464" y="510" class="s">файл</text>
+<rect x="532" y="418" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="546" y="446" class="t">Copilot CLI</text>
+<text x="762" y="446" class="s" text-anchor="end">1.0</text>
+<text x="546" y="466" class="s">Chat</text>
+<text x="546" y="494" class="t" style="fill:#86efac">✔ 9</text>
+<text x="546" y="510" class="s">подставной</text>
+<text x="650" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="650" y="510" class="s">команда</text>
+<text x="716" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="716" y="510" class="s">файл</text>
+<rect x="784" y="418" width="244" height="98" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<text x="798" y="446" class="t">Mistral Vibe</text>
+<text x="1014" y="446" class="s" text-anchor="end">2.26</text>
+<text x="798" y="466" class="s">Chat</text>
+<text x="798" y="494" class="t" style="fill:#86efac">✔ 9</text>
+<text x="798" y="510" class="s">подставной</text>
+<text x="902" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="902" y="510" class="s">команда</text>
+<text x="968" y="494" class="t" style="fill:#86efac">✔</text>
+<text x="968" y="510" class="s">файл</text>
+<text x="32" y="550" class="s">✔ прошло   ✘ промах клиента или модели (не утечка)   — не запускалось</text>
+<text x="32" y="570" class="s">«подставной» — число проверок на скриптовом провайдере; «команда» и «файл» — настоящая модель</text>
+</svg>

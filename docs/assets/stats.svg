@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="392" viewBox="0 0 1040 392" role="img" aria-label="Ключевые цифры Aegis">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#94a3b8"/></marker></defs>
+<style>
+text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #cbd5e1; font-size: 15px; }
+.h { font-size: 22px; font-weight: 700; fill: #f1f5f9; }
+.t { font-size: 17px; font-weight: 700; fill: #f1f5f9; }
+.s { font-size: 14px; fill: #94a3b8; }
+.n { font-size: 40px; font-weight: 800; fill: #f1f5f9; }
+.m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 13.5px; fill: #cbd5e1; }
+.b { font-weight: 700; }
+</style>
+<rect width="1040" height="392" rx="18" fill="#0b1220"/>
+<text x="32" y="44" class="h">Что измерено</text>
+<text x="32" y="66" class="s">aegis-bench и настоящие клиенты. Полнота измерена на корпусе того же автора: цифра оптимистична</text>
+<rect x="28" y="90" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="28" y="106" width="5" height="100" rx="2" fill="#5eead4"/>
+<text x="52" y="142" class="n">347</text>
+<text x="52" y="168" class="t">тестов</text>
+<text x="52" y="192" class="s">property-тесты, фаззинг, 1300+</text>
+<text x="52" y="210" class="s">сценариев эксфильтрации</text>
+<rect x="360" y="90" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="360" y="106" width="5" height="100" rx="2" fill="#5eead4"/>
+<text x="384" y="142" class="n">0</text>
+<text x="384" y="168" class="t">утечек провайдеру</text>
+<text x="384" y="192" class="s">в 15 клиентах из 16, настоящие</text>
+<text x="384" y="210" class="s">модели</text>
+<rect x="692" y="90" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="692" y="106" width="5" height="100" rx="2" fill="#fcd34d"/>
+<text x="716" y="142" class="n">2,76</text>
+<text x="716" y="168" class="t">ложных срабатываний</text>
+<text x="716" y="192" class="s">на 10 тыс. строк открытого кода</text>
+<text x="716" y="210" class="s">(4,95 млн строк); цель &lt; 1</text>
+<rect x="28" y="236" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="28" y="252" width="5" height="100" rx="2" fill="#fcd34d"/>
+<text x="52" y="288" class="n">98,9 %</text>
+<text x="52" y="314" class="t">полнота по паролям</text>
+<text x="52" y="338" class="s">синтетический корпус, 22 типа; цель</text>
+<text x="52" y="356" class="s">99 %</text>
+<rect x="360" y="236" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="360" y="252" width="5" height="100" rx="2" fill="#5eead4"/>
+<text x="384" y="288" class="n">7 мс</text>
+<text x="384" y="314" class="t">добавка, тёплый ход</text>
+<text x="384" y="338" class="s">p95 при контексте ~219 тыс. токенов;</text>
+<text x="384" y="356" class="s">цель ≤ 100 мс</text>
+<rect x="692" y="236" width="316" height="132" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="692" y="252" width="5" height="100" rx="2" fill="#5eead4"/>
+<text x="716" y="288" class="n">154 мс</text>
+<text x="716" y="314" class="t">первый ход, холодный</text>
+<text x="716" y="338" class="s">p95, пустой кэш, тот же контекст;</text>
+<text x="716" y="356" class="s">цель ≤ 400 мс</text>
+</svg>

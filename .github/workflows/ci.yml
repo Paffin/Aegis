@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,7 +53,7 @@ jobs:
         run: cargo run -q --release -p aegis-bench -- load --dir "$HOME/.cargo/registry/src" --seconds 10 --stream-secs 8 --max-ttfb-overhead-p95-ms 100 --min-streams 200
   supply-chain:
     # SEC-09: licenses, bans, advisories and sources; a CycloneDX SBOM of the workspace
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
@@ -70,7 +70,7 @@ jobs:
           name: sbom
           path: "**/*.cdx.json"
   image:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
       - name: Helm chart renders
@@ -89,7 +89,7 @@ jobs:
           curl -sf http://127.0.0.1:19090/readyz
           test "$(docker inspect aegis --format '{{.Config.User}}')" = nonroot
   clients:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, aegis]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

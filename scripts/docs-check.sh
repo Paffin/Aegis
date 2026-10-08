@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# REQ: CMP-01, CMP-02, CMP-03, CMP-05, EGR-01, EGR-02, NFR-05, NFR-08, QA-09
+# REQ: CMP-01, CMP-02, CMP-03, CMP-05, EGR-01, EGR-02, NFR-05, NFR-08, QA-09, CFG-07
 # Deliverables that are documents or configuration files, not code: they must exist and say what
 # the requirements demand. A missing sentence is a failing check, like a missing test.
 set -euo pipefail
@@ -47,4 +47,9 @@ for g in "aegis-bench -- recall" "aegis-bench -- fp" "aegis-bench -- code" "aegi
   grep -q -- "$g" .github/workflows/ci.yml || fail "QA-09: CI lacks «$g»"
 done
 echo "ok   QA-09: tests, detection and load gates, smoke, trace and supply chain run in CI"
+# CFG-07: the key in an HSM is described, with what it does not cover, and the tests run in CI on real tokens
+has docs/ADMIN.md "AEGIS_K_TENANT_PKCS11" "CFG-07: ADMIN describes the key in an HSM"
+has docs/ADMIN.md "ключ индекса" "CFG-07: ADMIN says which keys stay in memory"
+grep -q "build-kryoptic.sh" .github/workflows/ci.yml || fail "CFG-07: CI does not build a PKCS#11 token for the HSM tests"
+echo "ok   CFG-07: HSM keys documented, tested in CI against real tokens"
 echo "DOCS OK"

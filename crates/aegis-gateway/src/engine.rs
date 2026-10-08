@@ -337,6 +337,9 @@ pub struct RequestCtx {
     pub notice: std::cell::RefCell<Option<String>>,
     /// AGG-05: the request came with a valid Agent Guard token (the device is in `stats.guard`).
     pub guard: bool,
+    /// CFG-07: the key fault counter before the first computation of this request. When it has
+    /// moved by the end of the pseudonymization, a key in an HSM failed and nothing may go out.
+    pub key_mark: u64,
 }
 
 /// One scanned string literal of the request.
@@ -378,7 +381,12 @@ pub struct Rendered {
 }
 
 pub enum IngressError {
-    Blocked { rule: String, ty: EntityType },
+    Blocked {
+        rule: String,
+        ty: EntityType,
+    },
+    /// CFG-07: a key in an HSM could not compute. Fail closed: the request is refused.
+    KeyFault,
 }
 
 /// The entities of `text` found when it is read as the value of the member `key`.
@@ -526,6 +534,11 @@ pub fn process_blocks(
         };
         texts.push((out != b.text).then_some(out));
     }
+    // CFG-07: the pseudonyms, the audit hashes and the salt came from keys that may sit in an HSM;
+    // when one of them failed, what was derived is garbage and must not reach a provider.
+    if engine.keys.faulted_since(ctx.key_mark) {
+        return Err(IngressError::KeyFault);
+    }
     Ok(Rendered { texts })
 }
 
@@ -545,6 +558,7 @@ impl RequestCtx {
             reroute: None,
             notice: Default::default(),
             guard: false,
+            key_mark: 0,
         }
     }
 }

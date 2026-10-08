@@ -1,7 +1,7 @@
 //! `aegis-gateway` binary. REQ: NFR-06, NFR-09, SEC-06, CFG-05, SEC-02.
 
 use aegis_gateway::bundle_loader::{parse_trusted, Loader, Secrets, Source};
-use aegis_gateway::config::{secret, ProviderKeys, ServerConfig};
+use aegis_gateway::config::{load_keys, ProviderKeys, ServerConfig};
 use aegis_gateway::server::{admin_app, app};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,10 +47,11 @@ async fn main() {
         .unwrap_or_else(|e| fail(format!("cannot read config {path}: {e}")));
 
     // NFR-09: without keys the gateway does not start (fail-closed).
-    let k_t = secret("AEGIS_K_TENANT").unwrap_or_else(|e| fail(e));
-    let k_audit = secret("AEGIS_K_AUDIT").unwrap_or_else(|e| fail(e));
+    // A key in an HSM (CFG-07) that cannot be opened stops the start as well: the token, the PIN and
+    // the key object are checked here.
+    let keys = load_keys().unwrap_or_else(|e| fail(e));
     let mut state = cfg
-        .build(&k_t, &k_audit, ProviderKeys::from_env())
+        .build_keys(&keys, ProviderKeys::from_env())
         .unwrap_or_else(|e| fail(e));
     state.audit = cfg.build_audit().unwrap_or_else(|e| fail(e));
     if let Some(g) = &state.engine.load().code {
@@ -89,10 +90,7 @@ async fn main() {
             source: Source::parse(&b.source),
             cache: b.cache_path.as_ref().map(std::path::PathBuf::from),
             trusted: parse_trusted(&b.trusted_keys).unwrap_or_else(|e| fail(e)),
-            secrets: Secrets {
-                k_t: k_t.clone(),
-                k_audit: k_audit.clone(),
-            },
+            secrets: Secrets::clone(&keys),
             interval: Duration::from_secs(b.reload_seconds),
         });
         let mut last = None;

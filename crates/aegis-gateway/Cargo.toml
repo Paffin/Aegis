@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 aegis-core.workspace = true
+aegis-hsm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -33,6 +34,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+cryptoki.workspace = true
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 tracing-subscriber.workspace = true
 tracing.workspace = true

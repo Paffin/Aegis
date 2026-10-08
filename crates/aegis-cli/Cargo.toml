@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 aegis-core.workspace = true
+aegis-hsm.workspace = true
+zeroize.workspace = true
 clap.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
@@ -19,6 +21,9 @@ sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
+
+[dev-dependencies]
+cryptoki.workspace = true
 
 [lints]
 workspace = true

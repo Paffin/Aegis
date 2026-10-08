@@ -1,0 +1,20 @@
+[package]
+name = "aegis-hsm"
+version.workspace = true
+edition.workspace = true
+publish = false
+license.workspace = true
+
+[dependencies]
+aegis-core.workspace = true
+cryptoki.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+hmac.workspace = true
+
+[lints]
+workspace = true

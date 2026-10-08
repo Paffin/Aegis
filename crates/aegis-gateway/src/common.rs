@@ -838,7 +838,16 @@ pub fn guard(
 
 /// The 403 for a request that an ingress rule blocks.
 pub fn blocked(e: crate::engine::IngressError, request_id: &str) -> crate::anthropic::Reject {
-    let crate::engine::IngressError::Blocked { rule, ty } = e;
+    let (rule, ty) = match e {
+        crate::engine::IngressError::Blocked { rule, ty } => (rule, ty),
+        crate::engine::IngressError::KeyFault => {
+            return crate::anthropic::Reject {
+                status: 503,
+                kind: "api_error",
+                message: format!("Aegis: ключ в HSM недоступен, запрос остановлен (fail-closed). Request ID: {request_id}"),
+            }
+        }
+    };
     crate::anthropic::Reject {
         status: 403,
         kind: "permission_error",
@@ -891,6 +900,7 @@ pub fn finish_request<'n>(
     guard(engine, meta.route, &sw.guarded).map_err(|e| blocked(e, meta.request_id))?;
 
     let fu: Vec<&str> = d.first_user.iter().map(|s| s.as_str()).collect();
+    let key_mark = engine.keys.fault_mark();
     let (salt, _) = derive_salt(
         &engine.keys,
         &SaltInput {
@@ -906,6 +916,7 @@ pub fn finish_request<'n>(
         reroute: None,
         notice: Default::default(),
         guard: false,
+        key_mark,
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

@@ -27,15 +27,16 @@ const CODE: &[&str] = &[
 const MAX_FILE: u64 = 2 * 1024 * 1024;
 
 pub fn fingerprinter() -> Result<Fingerprinter, String> {
-    let key = aegis_core::secrets::read("AEGIS_K_TENANT").map_err(|e| {
-        format!(
-            "ключ тенанта (AEGIS_K_TENANT, AEGIS_K_TENANT_FILE или AEGIS_K_TENANT_COMMAND): {e}"
-        )
-    })?;
-    if key.len() < 16 {
-        return Err("ключ тенанта короче 16 байт".into());
+    // the key may be bytes or an object in an HSM (CFG-07): the index key is derived once, and the
+    // token computes that one HMAC, the master key stays in it
+    let key = aegis_hsm::load_prf("AEGIS_K_TENANT")
+        .map_err(|e| format!("ключ тенанта (AEGIS_K_TENANT, _FILE, _COMMAND или _PKCS11): {e}"))?;
+    let faults = key.faults();
+    let fp = Fingerprinter::from_prf(&*key);
+    if key.faults() != faults {
+        return Err("HSM не вычислил ключ индекса".into());
     }
-    Ok(Fingerprinter::new(&key))
+    Ok(fp)
 }
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -28,12 +28,9 @@ impl Source {
     }
 }
 
-/// Secrets never come from the bundle (CFG-05).
-#[derive(Clone)]
-pub struct Secrets {
-    pub k_t: Vec<u8>,
-    pub k_audit: Vec<u8>,
-}
+/// Secrets never come from the bundle (CFG-05). `K_t` and `K_audit` are bytes in memory or keys in
+/// an HSM (CFG-07); a bundle reload shares them.
+pub type Secrets = aegis_core::crypto::KeyPair;
 
 pub struct Loader {
     pub source: Source,
@@ -93,7 +90,7 @@ pub fn apply(
         .policy
         .compile()
         .map_err(|e| format!("invalid: {e}"))?;
-    let keys = TenantKeys::from_secrets(&compiled.tenant, &secrets.k_t, &secrets.k_audit);
+    let keys = TenantKeys::from_pair(&compiled.tenant, secrets);
     let old = st.engine.load();
     let (cache_bytes, budget) = old.limits();
     let engine = Engine::from_compiled(keys, compiled)
@@ -278,10 +275,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     fn secrets() -> Secrets {
-        Secrets {
-            k_t: vec![1; 32],
-            k_audit: vec![2; 32],
-        }
+        Secrets::from_bytes(&[1; 32], &[2; 32])
     }
 
     fn state() -> AppState {

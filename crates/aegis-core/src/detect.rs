@@ -80,6 +80,9 @@ pub struct DetectConfig {
     pub placeholder_markers: Vec<String>,
     /// Regexes of service accounts (DET-04 SVC); the company extends them in the bundle.
     pub service_account_patterns: Vec<String>,
+    /// DET-30: names of people in free text, by the shape of Russian names (patronymics, initials,
+    /// a first name beside a surname). On by default.
+    pub names: bool,
 }
 
 impl Default for DetectConfig {
@@ -110,6 +113,7 @@ impl Default for DetectConfig {
             .map(|s| s.to_string())
             .collect(),
             service_account_patterns: vec![],
+            names: true,
         }
     }
 }
@@ -1558,6 +1562,369 @@ impl Detector for CustomDetector {
 }
 
 // ---------------------------------------------------------------------------
+// Names of people in free text (DET-30, rules instead of a model)
+// ---------------------------------------------------------------------------
+
+/// Finds people the directory does not know: a surname, first name and patronymic in any order and
+/// case, a name with a patronymic, initials beside a surname (`Иванов И.И.`, `И. И. Иванов`), or a
+/// common first name beside a word shaped like a surname. It is not a language model: a name that
+/// has none of these shapes (`Пушкин`, alone) is not found, and neither is one that is written in
+/// capitals or in Latin letters. The directory (`employees`) stays the precise source.
+pub struct NameDetector {
+    word: Regex,
+    initials_after: Regex,
+    initials_before: Regex,
+}
+
+/// Common first names; any case form is recognized by the stem (`Ивана`, `Анной`).
+const FIRST_NAMES: &[&str] = &[
+    "александр",
+    "алексей",
+    "анатолий",
+    "андрей",
+    "антон",
+    "аркадий",
+    "артём",
+    "артем",
+    "борис",
+    "вадим",
+    "валентин",
+    "валерий",
+    "василий",
+    "виктор",
+    "виталий",
+    "владимир",
+    "владислав",
+    "вячеслав",
+    "геннадий",
+    "георгий",
+    "григорий",
+    "даниил",
+    "денис",
+    "дмитрий",
+    "евгений",
+    "егор",
+    "иван",
+    "игорь",
+    "илья",
+    "кирилл",
+    "константин",
+    "леонид",
+    "максим",
+    "михаил",
+    "никита",
+    "николай",
+    "олег",
+    "павел",
+    "пётр",
+    "петр",
+    "роман",
+    "руслан",
+    "сергей",
+    "станислав",
+    "степан",
+    "тимофей",
+    "фёдор",
+    "федор",
+    "юрий",
+    "ярослав",
+    "александра",
+    "алёна",
+    "алена",
+    "алина",
+    "алла",
+    "анастасия",
+    "анна",
+    "валентина",
+    "валерия",
+    "вера",
+    "виктория",
+    "галина",
+    "дарья",
+    "евгения",
+    "екатерина",
+    "елена",
+    "елизавета",
+    "инна",
+    "ирина",
+    "кристина",
+    "ксения",
+    "лариса",
+    "лидия",
+    "любовь",
+    "людмила",
+    "маргарита",
+    "марина",
+    "мария",
+    "надежда",
+    "наталья",
+    "наталия",
+    "нина",
+    "оксана",
+    "ольга",
+    "полина",
+    "светлана",
+    "софия",
+    "татьяна",
+    "тамара",
+    "юлия",
+    "яна",
+];
+
+const NAME_ENDINGS: &[&str] = &[
+    "", "а", "я", "у", "ю", "е", "ы", "и", "ой", "ей", "ом", "ем", "ём", "ою", "ею", "ь", "ью",
+    "ию", "ии", "ией", "ием",
+];
+
+fn is_first_name(word: &str) -> bool {
+    let w = word.to_lowercase();
+    FIRST_NAMES.iter().any(|n| {
+        let stem = n.trim_end_matches(['а', 'я', 'й', 'ь', 'и', 'е']);
+        let stem = if stem.is_empty() { n } else { stem };
+        w.strip_prefix(stem)
+            .is_some_and(|rest| NAME_ENDINGS.contains(&rest))
+    })
+}
+
+fn is_patronymic(word: &str) -> bool {
+    let w = word.to_lowercase();
+    for sfx in ["", "а", "у", "ем", "е"] {
+        if let Some(b) = w.strip_suffix(sfx) {
+            if (b.ends_with("ович") || b.ends_with("евич") || b.ends_with("ьич"))
+                && b.chars().count() >= 6
+            {
+                return true;
+            }
+            if sfx.is_empty() && b.ends_with("ич") && b.chars().count() >= 5 {
+                // Ильич, Кузьмич, Никитич: only with a first name in front of it, which the caller checks
+                return b.ends_with("ьич");
+            }
+        }
+    }
+    for sfx in ["а", "ы", "е", "у", "ой", "ою"] {
+        if let Some(b) = w.strip_suffix(sfx) {
+            if (b.ends_with("овн") || b.ends_with("евн") || b.ends_with("ичн"))
+                && b.chars().count() >= 5
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_surname_like(word: &str) -> bool {
+    let w = word.to_lowercase();
+    let n = w.chars().count();
+    if n < 4 {
+        return false;
+    }
+    const SUFFIXES: &[&str] = &[
+        "ов",
+        "ев",
+        "ёв",
+        "ин",
+        "ын",
+        "ова",
+        "ева",
+        "ёва",
+        "ина",
+        "ына",
+        "ский",
+        "цкий",
+        "ская",
+        "цкая",
+        "ского",
+        "цкого",
+        "ской",
+        "цкой",
+        "енко",
+        "ук",
+        "юк",
+        "чук",
+        "ян",
+        "дзе",
+        "ых",
+        "их",
+        "ова",
+        "овой",
+        "евой",
+        "иной",
+        "ынов",
+        "овым",
+        "евым",
+        "иным",
+        "овой",
+        "овых",
+        "ским",
+        "цким",
+        "ову",
+        "еву",
+        "ину",
+        "ына",
+        "ова",
+        "ове",
+        "еве",
+        "ине",
+    ];
+    SUFFIXES.iter().any(|s| w.ends_with(s))
+}
+
+/// The case endings are stripped so that every form of a name gives one key (and one pseudonym).
+fn name_stem(word: &str) -> String {
+    let w = word.to_lowercase();
+    for e in [
+        "ого", "ому", "ыми", "ами", "ем", "ом", "ым", "им", "ой", "ей", "ою", "ею", "ую", "ых",
+        "ах", "ям", "ы", "а", "у", "е", "ю", "и",
+    ] {
+        if let Some(b) = w.strip_suffix(e) {
+            if b.chars().count() >= 3 {
+                return b.to_string();
+            }
+        }
+    }
+    w
+}
+
+fn name_key(tokens: &[&str]) -> String {
+    let mut t: Vec<String> = tokens
+        .iter()
+        .map(|w| {
+            if w.chars().count() <= 2 {
+                w.trim_end_matches('.').to_lowercase()
+            } else {
+                name_stem(w)
+            }
+        })
+        .collect();
+    t.sort();
+    format!("ner:{}", t.join("|"))
+}
+
+impl NameDetector {
+    pub fn new() -> Self {
+        const W: &str = r"[А-ЯЁ][а-яё]{2,}(?:-[А-ЯЁ][а-яё]+)?";
+        Self {
+            word: Regex::new(W).expect("name word"),
+            // Иванов И.И. / Иванов И. И. / Иванов И.
+            initials_after: Regex::new(&format!(r"({W})\s([А-ЯЁ])\.(?:\s?([А-ЯЁ])\.)?"))
+                .expect("initials"),
+            // И.И. Иванов / И. И. Иванов / И. Иванов
+            initials_before: Regex::new(&format!(r"([А-ЯЁ])\.(?:\s?([А-ЯЁ])\.)?\s?({W})"))
+                .expect("initials"),
+        }
+    }
+
+    fn boundary_ok(text: &str, start: usize, end: usize) -> bool {
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !after.is_some_and(|c| c.is_alphabetic() || c == '_')
+    }
+}
+
+impl Default for NameDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Detector for NameDetector {
+    fn id(&self) -> &str {
+        "names"
+    }
+
+    fn scan(&self, text: &str, out: &mut Vec<Candidate>) {
+        let mut push =
+            |start: usize, end: usize, tokens: &[&str], priority: u8, rule: &'static str| {
+                if !Self::boundary_ok(text, start, end) {
+                    return;
+                }
+                let mut c = cand(start, end, EntityType::Person, None, rule, priority);
+                c.entity.person_key = Some(name_key(tokens));
+                out.push(c);
+            };
+
+        // runs of capitalized words separated by one space
+        let words: Vec<(usize, usize)> = self
+            .word
+            .find_iter(text)
+            .map(|m| (m.start(), m.end()))
+            .collect();
+        let mut i = 0;
+        while i < words.len() {
+            let mut j = i;
+            while j + 1 < words.len() && matches!(&text[words[j].1..words[j + 1].0], " " | "\u{a0}")
+            {
+                j += 1;
+            }
+            let run: Vec<&str> = words[i..=j].iter().map(|&(a, b)| &text[a..b]).collect();
+            let mut k = 0;
+            while k < run.len() {
+                let rest = run.len() - k;
+                let w = &run[k..];
+                let (a, _) = words[i + k];
+                // surname first name patronymic / first name patronymic surname
+                if rest >= 3
+                    && ((is_patronymic(w[2]) && (is_first_name(w[1]) || is_surname_like(w[0])))
+                        || (is_patronymic(w[1]) && (is_first_name(w[0]) || is_surname_like(w[2]))))
+                {
+                    push(a, words[i + k + 2].1, &w[..3], 70, "names.fio");
+                    k += 3;
+                    continue;
+                }
+                // first name patronymic
+                if rest >= 2 && is_first_name(w[0]) && is_patronymic(w[1]) {
+                    push(a, words[i + k + 1].1, &w[..2], 68, "names.io");
+                    k += 2;
+                    continue;
+                }
+                // first name beside a surname-shaped word, in either order
+                if rest >= 2
+                    && ((is_first_name(w[0]) && is_surname_like(w[1]))
+                        || (is_surname_like(w[0]) && is_first_name(w[1])))
+                {
+                    push(a, words[i + k + 1].1, &w[..2], 62, "names.pair");
+                    k += 2;
+                    continue;
+                }
+                k += 1;
+            }
+            i = j + 1;
+        }
+
+        for m in self.initials_after.captures_iter(text) {
+            let (all, sur) = (m.get(0).expect("whole"), m.get(1).expect("surname"));
+            if m.get(3).is_some() || is_surname_like(sur.as_str()) {
+                let toks: Vec<&str> = [
+                    Some(sur.as_str()),
+                    m.get(2).map(|x| x.as_str()),
+                    m.get(3).map(|x| x.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                push(all.start(), all.end(), &toks, 66, "names.initials");
+            }
+        }
+        for m in self.initials_before.captures_iter(text) {
+            let (all, sur) = (m.get(0).expect("whole"), m.get(3).expect("surname"));
+            if m.get(2).is_some() || is_surname_like(sur.as_str()) {
+                let toks: Vec<&str> = [
+                    m.get(1).map(|x| x.as_str()),
+                    m.get(2).map(|x| x.as_str()),
+                    Some(sur.as_str()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect();
+                push(all.start(), all.end(), &toks, 66, "names.initials");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
@@ -1568,12 +1935,15 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(cfg: DetectConfig, dict: Dictionary) -> Self {
-        let detectors: Vec<Box<dyn Detector>> = vec![
+        let mut detectors: Vec<Box<dyn Detector>> = vec![
             Box::new(SecretDetector::new(cfg.clone())),
             Box::new(InfraDetector::new(cfg.clone())),
-            Box::new(PiiDetector::new(cfg)),
+            Box::new(PiiDetector::new(cfg.clone())),
             Box::new(DictionaryDetector::new(dict.clone())),
         ];
+        if cfg.names {
+            detectors.push(Box::new(NameDetector::new()));
+        }
         Self { detectors, dict }
     }
 
@@ -1695,6 +2065,61 @@ mod tests {
 
     // REQ: DET-04 — found with Hermes Agent against a real model: its file viewer prefixes lines with
     // `2|`, and the password on such a line went to the provider. Every viewer's numbering counts.
+    // REQ: DET-30 — names of people the directory does not know, found by the shape of Russian names.
+    #[test]
+    fn names_in_free_text() {
+        let names = |t: &str| -> Vec<String> {
+            found(t)
+                .into_iter()
+                .filter(|(ty, _)| *ty == EntityType::Person)
+                .map(|(_, v)| v)
+                .collect()
+        };
+        assert_eq!(
+            names("Заявку подписал Сидоров Пётр Семёнович вчера"),
+            ["Сидоров Пётр Семёнович"]
+        );
+        assert_eq!(
+            names("передать Ивану Петровичу Кузнецову"),
+            ["Ивану Петровичу Кузнецову"]
+        );
+        assert_eq!(names("позвони Анне Смирновой завтра"), ["Анне Смирновой"]);
+        assert_eq!(names("Пётр Алексеевич пришёл"), ["Пётр Алексеевич"]);
+        assert_eq!(
+            names("Отчёт: Орлов И.И. и А. С. Грибоедов"),
+            ["Орлов И.И.", "А. С. Грибоедов"]
+        );
+        // every case form of one person is one person: the same key, so one pseudonym
+        let key = |t: &str| {
+            pipe()
+                .scan(t)
+                .into_iter()
+                .find_map(|e| e.person_key)
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            key("Кузнецов Иван Петрович"),
+            key("Кузнецову Ивану Петровичу")
+        );
+        assert_eq!(key("Анна Смирнова"), key("Анне Смирновой"));
+        // not names: one capitalized word, a first name beside an ordinary word, capitals, code, Latin
+        for t in [
+            "Вчера Иван заехал в офис",
+            "Новая Версия Микросервиса готова",
+            "Вера Информатика и Россия",
+            "ИВАНОВ ИВАН ИВАНОВИЧ",
+            "Ivan Petrovich Sidorov",
+            "обратиться к И. в отделе",
+            "Москва Санкт-Петербург Казань",
+        ] {
+            assert!(names(t).is_empty(), "{t}: {:?}", names(t));
+        }
+        // the directory still wins: its person keeps its own key
+        assert!(found("Иван Петров")
+            .iter()
+            .any(|(ty, v)| *ty == EntityType::Person && v == "Иван Петров"));
+    }
+
     #[test]
     fn a_mistyped_internal_zone_is_still_a_host() {
         let f = found("URL = 'https://payments.corp.lcoal/api'");

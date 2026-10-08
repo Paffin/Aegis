@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build: static-ish release binaries in a minimal runtime image, non-root, no shell.
-FROM rust:1.97-slim AS build
+# bookworm on both sides: the binaries need the glibc of the runtime image (the untagged slim moved to a newer Debian)
+FROM rust:1.97-slim-bookworm AS build
 WORKDIR /src
 # No system packages: TLS is rustls with built-in roots, there is no OpenSSL or pkg-config to install.
 COPY Cargo.toml Cargo.lock ./

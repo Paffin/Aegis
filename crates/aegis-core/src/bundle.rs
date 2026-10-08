@@ -63,6 +63,9 @@ pub struct Zones {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct DetectorsDoc {
+    /// DET-30: names of people in free text by the shape of the name; on unless `false`.
+    #[serde(default)]
+    pub names: Option<bool>,
     #[serde(default)]
     pub service_account_patterns: Vec<String>,
     #[serde(default)]
@@ -362,6 +365,7 @@ impl PolicyDoc {
     pub fn compile(&self) -> Result<Compiled, String> {
         let mut detect = DetectConfig {
             internal_zones: self.zones.internal.clone(),
+            names: self.detectors.names.unwrap_or(true),
             ..Default::default()
         };
         for r in &self.zones.company_ranges {

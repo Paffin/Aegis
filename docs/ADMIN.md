@@ -120,6 +120,7 @@ pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --token-label aegis --login
 | `bundle` | `source` (путь или URL), `cache_path`, `trusted_keys` (hex открытых ключей), `reload_seconds` (1–30) |
 | `audit_path`, `audit_required`, `audit_queue` | Файл аудита JSONL (по умолчанию stdout), остановка трафика при переполнении очереди, размер очереди |
 | `internal_zones`, `company_ranges`, `service_account_patterns`, `employees`, `terms`, `virtual_keys` | Те же настройки без бандла. С бандлом их задаёт политика |
+| `detect_names`, `sweep_secrets` | Без бандла. `detect_names` (по умолчанию `true`): имена людей в свободном тексте по форме русских имён (`DET-30`), без каталога сотрудников. `sweep_secrets` (по умолчанию `true`): секрет, найденный в одном блоке запроса, маскируется и в других блоках с тем же текстом (`DET-35`). С бандлом: `detectors.names`, `detectors.sweep_secrets` |
 
 Нужен хотя бы один провайдер. Подробности, адреса и примеры для DeepSeek, Qwen, Kimi, GLM, Azure, Ollama и других — в [PROVIDERS.md](PROVIDERS.md). Файл примера — [examples/gateway.json](../examples/gateway.json).
 
@@ -163,6 +164,8 @@ tenant: acme
 zones: { internal: [corp.local, company.ru], company_ranges: ["10.50.0.0/16"] }
 detectors:
   service_account_patterns: ['\bacme_[a-z]+_svc\b']
+  names: true            # имена людей в свободном тексте по форме (DET-30), по умолчанию да
+  sweep_secrets: true    # найденный секрет маскируется и в других блоках запроса (DET-35), по умолчанию да
   custom:
     - id: acme-token
       type: SECRET

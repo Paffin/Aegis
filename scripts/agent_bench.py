@@ -200,7 +200,7 @@ def usage_of(chunks):
         if d.get("type") == "message_delta" and "usage" in d:                    # anthropic: the final output count
             u["output"] = max(u["output"], d["usage"].get("output_tokens", 0))
             continue
-        if isinstance(d.get("response"), dict) and "usage" in d["response"]:     # responses
+        if isinstance(d.get("response"), dict) and isinstance(d["response"].get("usage"), dict):   # responses (`usage` is null in response.created)
             us = d["response"]["usage"]
             c = (us.get("input_tokens_details") or {}).get("cached_tokens", 0)
             u["input"] += us.get("input_tokens", 0) - c

@@ -61,6 +61,7 @@ pub fn restore_text(engine: &Engine, ctx: &RequestCtx, text: &str) -> (String, b
         trifecta_cfg: &engine.trifecta,
         trifecta: ctx.trifecta,
         precleared: false,
+        guard: ctx.guard,
     };
     // The pieces of a stream are restored one by one, but whether a value may be restored can
     // depend on what came before it (the start of a URL): the end of the earlier pieces is the
@@ -323,6 +324,7 @@ pub fn restore_tool_call(
             trifecta_cfg: &engine.trifecta,
             trifecta: ctx.trifecta,
             precleared,
+            guard: ctx.guard,
         };
         let o = restore(text, &ctx.mapping, &engine.restore_policy, &c);
         let mut slot = denied.borrow_mut();
@@ -903,6 +905,7 @@ pub fn finish_request<'n>(
         text_tail: Default::default(),
         reroute: None,
         notice: Default::default(),
+        guard: false,
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

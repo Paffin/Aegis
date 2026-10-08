@@ -165,6 +165,29 @@ fn default_action(class: Class, sink: Sink) -> Action {
 }
 
 impl RestorePolicy {
+    /// AGG-03: with a valid Agent Guard token, personal data in a local command is not refused by the
+    /// default table: it is restored, and the guard on the machine asks the user before the command
+    /// runs. A rule of the company policy for that case still wins.
+    pub fn decide_with_guard(
+        &self,
+        ty: EntityType,
+        kind: Option<&str>,
+        sink: Sink,
+        guard: bool,
+    ) -> (Action, String) {
+        let (action, rule) = self.decide(ty, kind, sink);
+        let personal = matches!(ty.class(), Class::Pii | Class::Corp);
+        if guard
+            && personal
+            && sink == Sink::ShellLocal
+            && rule == "default"
+            && action == Action::Deny
+        {
+            return (Action::Restore, "AGG-03".into());
+        }
+        (action, rule)
+    }
+
     /// POL-03: specificity first (type+kind, type, class), then order, then defaults.
     pub fn decide(&self, ty: EntityType, kind: Option<&str>, sink: Sink) -> (Action, String) {
         let class = ty.class();

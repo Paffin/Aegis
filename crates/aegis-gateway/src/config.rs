@@ -68,6 +68,9 @@ pub struct ServerConfig {
     /// Model aliases (RTE-02): the client asks for `claude-default`, the provider gets the real name.
     #[serde(default)]
     pub model_aliases: std::collections::BTreeMap<String, String>,
+    /// AGG-05: devices with Agent Guard; a valid token lets the gateway rely on the guard (AGG-03).
+    #[serde(default)]
+    pub guard: Option<crate::guard::GuardConfig>,
     /// DET-20: recognize blocks of closed code by fingerprints (`aegis index build`).
     #[serde(default)]
     pub code_index: Option<crate::code_index::CodeIndexConfig>,
@@ -537,6 +540,11 @@ impl ServerConfig {
         st.openai = openai;
         st.gemini = gemini;
         st.routes = routes;
+        if let Some(g) = &self.guard {
+            st.guard = Some(std::sync::Arc::new(
+                crate::guard::GuardRegistry::new(g).map_err(ConfigError::Invalid)?,
+            ));
+        }
         st.bundle_required = self.bundle.is_some();
         if self
             .model_aliases

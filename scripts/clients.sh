@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 fail=0
-for s in client-claude.sh client-claude-files.sh client-claude-guard.sh client-codex.sh client-qwen.sh client-gemini.sh client-opencode.sh client-aider.sh client-continue.sh client-cline.sh client-hermes.sh client-openclaw.sh client-crush.sh client-kilo.sh client-pi.sh client-goose.sh client-copilot.sh client-vibe.sh; do
+for s in client-claude.sh client-claude-files.sh client-claude-guard.sh client-claude-agg.sh client-codex.sh client-qwen.sh client-gemini.sh client-opencode.sh client-aider.sh client-continue.sh client-cline.sh client-hermes.sh client-openclaw.sh client-crush.sh client-kilo.sh client-pi.sh client-goose.sh client-copilot.sh client-vibe.sh; do
   echo "== $s"
   ./"$s" || { echo "FAILED: $s"; fail=1; }
 done

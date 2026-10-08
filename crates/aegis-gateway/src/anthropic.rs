@@ -417,6 +417,7 @@ pub fn transform_request(
         text_tail: Default::default(),
         reroute: None,
         notice: Default::default(),
+        guard: false,
         salt,
         mapping: Mapping::default(),
         trifecta: Default::default(),

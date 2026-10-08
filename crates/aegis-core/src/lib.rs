@@ -9,6 +9,7 @@ pub mod crypto;
 pub mod danger;
 pub mod detect;
 pub mod fingerprint;
+pub mod guardtoken;
 pub mod policy;
 pub mod policytest;
 pub mod pseudo;

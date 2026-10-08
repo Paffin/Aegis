@@ -6,7 +6,7 @@ use aegis_guard::hook::{run, Format};
 use std::io::Read;
 
 fn usage() -> ! {
-    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь]\naegis-guard check [--config файл]");
+    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь]\naegis-guard check [--config файл]\naegis-guard enroll [--id имя] [--key-file файл]   ключ этого устройства; печатает строку для guard.devices\naegis-guard token [--key-file файл] [--conversation id]\naegis-guard credential (--vk-file файл | --vk-env ИМЯ) [--key-file файл]   `ключ~токен` для apiKeyHelper");
     std::process::exit(2)
 }
 
@@ -51,7 +51,48 @@ fn main() {
     let config = take(&mut args, "--config");
     let format = take(&mut args, "--format");
     let binary = take(&mut args, "--aegis-guard");
+    let key_file = take(&mut args, "--key-file")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(aegis_guard::device::default_key_file);
+    let fail = |e: String| -> ! {
+        eprintln!("aegis-guard: {e}");
+        std::process::exit(1)
+    };
     match cmd.as_str() {
+        "enroll" => {
+            let id = take(&mut args, "--id").unwrap_or_else(|| {
+                std::env::var("HOSTNAME")
+                    .or_else(|_| std::env::var("HOST"))
+                    .unwrap_or_else(|_| "device".into())
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                    .take(40)
+                    .collect()
+            });
+            match aegis_guard::device::enroll(&key_file, &id) {
+                Ok((id, public)) => {
+                    println!("устройство {id}, ключ записан в {}", key_file.display());
+                    println!("добавьте в конфигурацию gateway, раздел guard.devices:");
+                    println!("  {{\"id\": \"{id}\", \"public_key\": \"{public}\"}}");
+                }
+                Err(e) => fail(e),
+            }
+        }
+        "token" => match aegis_guard::device::token(&key_file, take(&mut args, "--conversation").as_deref()) {
+            Ok(t) => println!("{t}"),
+            Err(e) => fail(e),
+        },
+        "credential" => {
+            let vk = match (take(&mut args, "--vk-file"), take(&mut args, "--vk-env")) {
+                (Some(f), None) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}")),
+                (None, Some(n)) => std::env::var(&n).map_err(|_| format!("переменная {n} не задана")),
+                _ => Err("нужен один из --vk-file и --vk-env".into()),
+            };
+            match vk.and_then(|v| aegis_guard::device::token(&key_file, None).map(|t| format!("{}~{t}", v.trim()))) {
+                Ok(c) => println!("{c}"),
+                Err(e) => fail(e),
+            }
+        }
         "hook" => {
             let fmt = match format.as_deref() {
                 None | Some("claude-code") => Format::ClaudeCode,

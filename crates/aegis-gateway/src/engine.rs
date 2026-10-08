@@ -298,6 +298,8 @@ pub struct Stats {
     pub detector_faults: Vec<&'static str>,
     /// Blocks that looked like a closed repository: (repository, classification, action).
     pub code_blocks: Vec<(String, String, &'static str)>,
+    /// AGG-05: the Agent Guard device whose token came with the request.
+    pub guard: Option<String>,
 }
 
 impl Stats {
@@ -333,6 +335,8 @@ pub struct RequestCtx {
     pub reroute: Option<String>,
     /// RTE-04: a notice for the user, put before the first text of the response.
     pub notice: std::cell::RefCell<Option<String>>,
+    /// AGG-05: the request came with a valid Agent Guard token (the device is in `stats.guard`).
+    pub guard: bool,
 }
 
 /// One scanned string literal of the request.
@@ -540,6 +544,7 @@ impl RequestCtx {
             text_tail: Default::default(),
             reroute: None,
             notice: Default::default(),
+            guard: false,
         }
     }
 }

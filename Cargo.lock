@@ -85,6 +85,8 @@ name = "aegis-guard"
 version = "0.1.0"
 dependencies = [
  "aegis-core",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
  "regex",
  "serde",
  "serde_json",

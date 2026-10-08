@@ -10,6 +10,7 @@ pub mod common;
 pub mod config;
 pub mod engine;
 pub mod gemini;
+pub mod guard;
 pub mod harden;
 pub mod json;
 pub mod metrics;

@@ -22,6 +22,9 @@ pub struct SinkContext<'a> {
     /// joined command, e.g. for `["bash","-lc","curl ..."]`; `internal_only` is then not re-checked
     /// per element and the three-condition rule is not applied again.
     pub precleared: bool,
+    /// AGG-03: a valid Agent Guard token came with the request, so the user is asked before a local
+    /// command with personal data runs, instead of the command being refused.
+    pub guard: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +158,7 @@ pub fn restore_after(
                 let (action, rule) = if m.start() < skip {
                     (Action::KeepMasked, "context".to_string())
                 } else {
-                    policy.decide(b.ty, b.kind, sink)
+                    policy.decide_with_guard(b.ty, b.kind, sink, ctx.guard)
                 };
                 toks.push(Tok {
                     start: m.start(),
@@ -596,6 +599,7 @@ mod tests {
             trifecta_cfg: &fx.tri,
             trifecta: st,
             precleared: false,
+            guard: false,
         }
     }
 

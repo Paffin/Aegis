@@ -32,6 +32,8 @@ jobs:
           NEG=$(for d in "$HOME"/.cargo/registry/src/*/*/; do echo "--negative $d"; done)
           cargo run -q --release -p aegis-bench -- code --closed "$T" $NEG --min-recall 95 --max-false 0.1
           cargo run -q --release -p aegis-bench -- perf --dir "$HOME/.cargo/registry/src" --kb 800 --iterations 15 --max-warm-p95-ms 50
+      - name: Agent Guard decides within 20 ms (AGG-07)
+        run: cargo test -q --release -p aegis-guard --test guard a_decision_takes_milliseconds
       - name: Demo (README walkthrough keeps working)
         run: scripts/demo.sh
       - name: Load test (NFR-03, NFR-04)

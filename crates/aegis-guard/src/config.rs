@@ -48,6 +48,10 @@ pub struct CommandsDoc {
     /// What happens to a dangerous command (built-in list and `deny`): `ask` (default), `deny`.
     #[serde(default)]
     pub action: Option<String>,
+    /// A command that holds personal data (e-mail, phone, passport, SNILS, INN, card) -- AGG-03: `ask`
+    /// (default), `deny` or `allow`.
+    #[serde(default)]
+    pub personal_data: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -128,6 +132,8 @@ pub struct Rules {
     pub path_action: Act,
     pub deny_commands: Vec<Regex>,
     pub command_action: Act,
+    /// `None`: personal data in commands is not checked.
+    pub personal_data: Option<Act>,
     pub allow_hosts: Vec<String>,
     pub host_action: Act,
 }
@@ -209,6 +215,16 @@ impl GuardDoc {
                 })
                 .collect::<Result<_, _>>()?,
             command_action: act("commands.action", &self.commands.action)?,
+            personal_data: match self.commands.personal_data.as_deref() {
+                None | Some("ask") => Some(Act::Ask),
+                Some("deny") => Some(Act::Deny),
+                Some("allow") => None,
+                Some(o) => {
+                    return Err(format!(
+                        "commands.personal_data: «{o}», нужно ask, deny или allow"
+                    ))
+                }
+            },
             allow_hosts: self
                 .network
                 .allow_hosts

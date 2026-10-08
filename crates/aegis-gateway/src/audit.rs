@@ -32,6 +32,9 @@ pub struct AuditEvent {
     /// DET-20: blocks that looked like a closed repository (names, never code).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub code_blocks: Vec<CodeBlockEvent>,
+    /// AGG-05: the Agent Guard device behind the request, if its token was valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guard: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -139,6 +142,7 @@ impl AuditEvent {
                 })
                 .collect(),
             detector_faults: ctx.stats.detector_faults.clone(),
+            guard: ctx.stats.guard.clone(),
             code_blocks: ctx
                 .stats
                 .code_blocks
@@ -285,6 +289,7 @@ mod tests {
             sinks: vec![],
             detector_faults: vec![],
             code_blocks: vec![],
+            guard: None,
         }
     }
 

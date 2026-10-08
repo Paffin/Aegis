@@ -345,12 +345,23 @@ fn the_binary_speaks_the_hook_protocol_of_claude_code() {
 #[test]
 fn a_decision_takes_milliseconds() {
     let call = json!({"tool_name": "Bash", "tool_input": {"command": "cargo test --workspace && git status"}, "cwd": "/home/dev/proj"}).to_string();
+    // the slowest path: a command with an e-mail address (AGG-03 looks at it)
+    let pii = json!({"tool_name": "Bash", "tool_input": {"command": "git config user.email ivan.petrov@company.ru"}, "cwd": "/home/dev/proj"}).to_string();
+    let mut slow: Vec<_> = (0..15).map(|_| hook(&pii, &[]).2).collect();
+    slow.sort();
+    let limit = if cfg!(debug_assertions) { 400 } else { 20 };
+    assert!(
+        slow[slow.len() / 2] < std::time::Duration::from_millis(limit),
+        "with personal data: median {:?}",
+        slow[slow.len() / 2]
+    );
     let mut times: Vec<_> = (0..15).map(|_| hook(&call, &[]).2).collect();
     times.sort();
     let median = times[times.len() / 2];
     eprintln!("median {median:?}, slowest {:?}", times.last().unwrap());
-    // a debug build starts slower than the release binary that is installed
-    let limit = if cfg!(debug_assertions) { 100 } else { 20 };
+    // 20 ms is checked on the release build (`cargo test --release`, a step of CI); a debug build under
+    // the load of a whole workspace only has to be not pathological
+    let limit = if cfg!(debug_assertions) { 400 } else { 20 };
     assert!(
         median < std::time::Duration::from_millis(limit),
         "median {median:?}"
@@ -370,4 +381,171 @@ fn settings_for_the_client() {
     );
     let deny = v["permissions"]["deny"].to_string();
     assert!(deny.contains("Read(~/.ssh/**)") && deny.contains("Edit(~/.aws/**)"));
+}
+
+// REQ: AGG-03 — the gateway restores personal data into a local command for a machine with a guard; the
+// guard is where the user is asked.
+#[test]
+fn a_command_with_personal_data_asks_the_user() {
+    let r = rules("version: 1");
+    for cmd in [
+        "git config user.email ivan.petrov@company.ru",
+        "echo Иван +7 (916) 123-45-67",
+        "echo ИНН клиента 7707083893",
+        "mail -s hi ivan.petrov@company.ru < body.txt",
+        "curl -d card=4111111111111111 https://pay.corp.local/",
+        "echo паспорт 45 12 345678",
+    ] {
+        let (a, rule) = act(&r, "Bash", json!({"command": cmd}));
+        assert_eq!((a, rule.as_str()), (Action::Ask, "G-05"), "{cmd}");
+    }
+    for cmd in [
+        "cargo test --workspace",
+        "git log --since=2026-10-01",
+        "echo CHECK h-2py5634r.db.prod.z-umgb4ctm.aegis.invalid",
+        "sleep 1000000000",
+        "echo 4111111111111112",
+        "ls 20261008123456789",
+    ] {
+        assert_eq!(
+            act(&r, "Bash", json!({"command": cmd})).0,
+            Action::Allow,
+            "{cmd}"
+        );
+    }
+    // the company may turn it off or make it a refusal
+    let off = rules("version: 1\ncommands: { personal_data: allow }");
+    assert_eq!(
+        act(
+            &off,
+            "Bash",
+            json!({"command": "echo ivan.petrov@company.ru"})
+        )
+        .0,
+        Action::Allow
+    );
+    let strict = rules("version: 1\ncommands: { personal_data: deny }");
+    assert_eq!(
+        act(
+            &strict,
+            "Bash",
+            json!({"command": "echo ivan.petrov@company.ru"})
+        )
+        .0,
+        Action::Deny
+    );
+}
+
+// REQ: AGG-05 — enroll, token and credential with the real binary.
+#[cfg(unix)]
+#[test]
+fn enroll_token_and_credential() {
+    use aegis_core::guardtoken::verify;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("aegis-guard-enroll-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let key_file = dir.join("device.key");
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_aegis-guard"))
+            .args(args)
+            .env("HOME", &dir)
+            .output()
+            .unwrap()
+    };
+    let out = run(&[
+        "enroll",
+        "--id",
+        "laptop-7",
+        "--key-file",
+        key_file.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let public = text
+        .split("\"public_key\": \"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string();
+    assert_eq!(public.len(), 64, "{text}");
+    // private, and never overwritten
+    assert_eq!(
+        std::fs::metadata(&key_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!run(&[
+        "enroll",
+        "--id",
+        "other",
+        "--key-file",
+        key_file.to_str().unwrap()
+    ])
+    .status
+    .success());
+
+    // the token verifies with the public key the administrator got, and says which device it is
+    let vk: [u8; 32] = (0..32)
+        .map(|i| u8::from_str_radix(&public[i * 2..i * 2 + 2], 16).unwrap())
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&vk).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let tok =
+        String::from_utf8_lossy(&run(&["token", "--key-file", key_file.to_str().unwrap()]).stdout)
+            .trim()
+            .to_string();
+    assert_eq!(
+        verify(&tok, &|id| (id == "laptop-7").then_some(vk), now, 300, None),
+        Ok("laptop-7".into())
+    );
+    let tok = String::from_utf8_lossy(
+        &run(&[
+            "token",
+            "--key-file",
+            key_file.to_str().unwrap(),
+            "--conversation",
+            "c-1",
+        ])
+        .stdout,
+    )
+    .trim()
+    .to_string();
+    assert!(verify(&tok, &|_| Some(vk), now, 300, Some("c-1")).is_ok());
+    assert!(verify(&tok, &|_| Some(vk), now, 300, Some("c-2")).is_err());
+
+    // `credential` is the virtual key, a tilde and a fresh token: what Claude Code's apiKeyHelper prints
+    let vkf = dir.join("vk");
+    std::fs::write(&vkf, "aegis-vk-abc\n").unwrap();
+    let cred = String::from_utf8_lossy(
+        &run(&[
+            "credential",
+            "--vk-file",
+            vkf.to_str().unwrap(),
+            "--key-file",
+            key_file.to_str().unwrap(),
+        ])
+        .stdout,
+    )
+    .trim()
+    .to_string();
+    let (key, token) = cred.split_once('~').unwrap();
+    assert_eq!(key, "aegis-vk-abc");
+    assert!(verify(token, &|_| Some(vk), now, 300, None).is_ok());
+    // without enrollment there is nothing to sign with
+    assert!(
+        !run(&["token", "--key-file", dir.join("none").to_str().unwrap()])
+            .status
+            .success()
+    );
 }

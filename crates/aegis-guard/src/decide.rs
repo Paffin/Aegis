@@ -166,6 +166,78 @@ fn writes(cmd: &str) -> bool {
         || cmd.contains("sed -i")
 }
 
+/// AGG-03: the kind of personal data in a command, if any. The gateway restores real values into local
+/// commands for a machine that has a guard; this is where the user is asked before they run.
+///
+/// A small set of patterns, not the detectors of the gateway: those take 40 ms to set up and the
+/// decision has 20 ms for everything, the start of the process included (AGG-07).
+fn personal_data(cmd: &str) -> Option<&'static str> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+    struct Pats {
+        email: Regex,
+        phone: Regex,
+        id_doc: Regex,
+        card: Regex,
+    }
+    static P: OnceLock<Pats> = OnceLock::new();
+    let digits = cmd.chars().filter(|c| c.is_ascii_digit()).count();
+    if !cmd.contains('@') && digits < 9 {
+        return None;
+    }
+    let p = P.get_or_init(|| {
+        let re = |s: &str| Regex::new(s).expect("static regex");
+        Pats {
+            email: re(r"[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9\-]{1,63}(?:\.[A-Za-z0-9\-]{1,63})*\.[A-Za-z]{2,}"),
+            phone: re(r"(?:\+7|\b8)[ \-(]*\d{3}[ \-)]*\d{3}[ \-]*\d{2}[ \-]*\d{2}\b|\+\d{1,3}[ \-(]*\d{2,4}[ \-)]*\d{3}[ \-]*\d{2,4}[ \-]*\d{2,4}\b"),
+            id_doc: re(r"(?i)(паспорт|инн|снилс|passport|tax id)[^0-9\n]{0,25}(\d[\d \-]{7,18}\d)"),
+            card: re(r"\b(?:\d[ \-]?){13,19}\b"),
+        }
+    });
+    if p.email.is_match(cmd) {
+        return Some("почта");
+    }
+    if p.phone.is_match(cmd) {
+        return Some("телефон");
+    }
+    if let Some(c) = p.id_doc.captures(cmd) {
+        return Some(match c[1].to_lowercase().as_str() {
+            "паспорт" | "passport" => "паспорт",
+            "снилс" => "СНИЛС",
+            _ => "ИНН",
+        });
+    }
+    // a card number is a run of 13-19 digits that passes the Luhn check
+    for m in p.card.find_iter(cmd) {
+        let d: Vec<u32> = m.as_str().chars().filter_map(|c| c.to_digit(10)).collect();
+        if (13..=19).contains(&d.len()) && luhn(&d) {
+            return Some("номер карты");
+        }
+    }
+    None
+}
+
+fn luhn(d: &[u32]) -> bool {
+    let sum: u32 = d
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, x)| {
+            if i % 2 == 1 {
+                let y = x * 2;
+                if y > 9 {
+                    y - 9
+                } else {
+                    y
+                }
+            } else {
+                *x
+            }
+        })
+        .sum();
+    sum.is_multiple_of(10)
+}
+
 fn worst(a: Decision, b: Decision) -> Decision {
     if b.action > a.action {
         b
@@ -257,6 +329,18 @@ pub fn decide(rules: &Rules, env: &Env<'_>, tool: &str, input: &Value) -> Decisi
                     action: asked(rules.command_action),
                     rule: "G-03".into(),
                     reason: format!("опасная команда ({id})"),
+                },
+            );
+        }
+        if let (Some(act), Some(kind)) = (rules.personal_data, personal_data(&cmd)) {
+            d = worst(
+                d,
+                Decision {
+                    action: asked(act),
+                    rule: "G-05".into(),
+                    reason: format!(
+                        "в команде персональные данные ({kind}); подтвердите выполнение"
+                    ),
                 },
             );
         }

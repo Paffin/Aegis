@@ -279,6 +279,8 @@ pub struct AppState {
     /// Requests in flight (a request holds its permit until its response body is over): beyond
     /// the limit a request is refused at once instead of piling up bodies in memory.
     pub limiter: Arc<tokio::sync::Semaphore>,
+    /// AGG-05: Agent Guard devices; `None` without `guard` in the configuration.
+    pub guard: Option<Arc<crate::guard::GuardRegistry>>,
     /// RTE-04: conversation (by salt) -> route it was sent to by a policy action, and until when.
     pub pins: std::sync::Mutex<std::collections::HashMap<String, (String, i64)>>,
     /// Creation time of the newest bundle applied (or cached): older ones are refused.
@@ -365,6 +367,7 @@ impl AppState {
             body_idle: BODY_IDLE,
             bundle_floor: std::sync::atomic::AtomicI64::new(0),
             pins: Default::default(),
+            guard: None,
             routes: vec![],
             model_aliases: Default::default(),
             audit: Audit::disabled(),
@@ -438,6 +441,15 @@ fn client_key(h: &HeaderMap, query: &str) -> Option<String> {
         .split('&')
         .find_map(|kv| kv.strip_prefix("key="))
         .map(String::from)
+}
+
+/// AGG-05: the Agent Guard token of a request: the `X-Aegis-Guard` header, or the part of the credential
+/// after `~` (for clients that can refresh a credential but cannot add a changing header).
+fn guard_token(h: &HeaderMap, query: &str) -> Option<String> {
+    if let Some(v) = h.get("x-aegis-guard").and_then(|v| v.to_str().ok()) {
+        return Some(v.to_string());
+    }
+    client_key(h, query).and_then(|k| k.split_once('~').map(|(_, t)| t.to_string()))
 }
 
 /// The query string without the client's key (never forwarded, never logged).
@@ -738,6 +750,8 @@ fn authenticate(h: &HeaderMap, st: &AppState) -> Result<Principal, String> {
 /// The principal behind the key or token, or the message for the 401.
 fn authenticate_q(h: &HeaderMap, st: &AppState, query: &str) -> Result<Principal, String> {
     let key = client_key(h, query).ok_or("Aegis: требуется виртуальный ключ")?;
+    // `key~guard-token`: the guard's proof rides with the credential (AGG-05)
+    let key = key.split('~').next().unwrap_or_default().to_string();
     if let Some(v) = st
         .oidc
         .as_ref()
@@ -1415,6 +1429,28 @@ async fn proxy(
     // RTE-03, RTE-04, RTE-05: a policy action may send the request to another route, and a
     // conversation sent there stays there.
     let mut ctx = ctx;
+    // AGG-05: a valid token of an enrolled device means the guard on the machine checks local commands
+    if let Some(reg) = &st.guard {
+        use crate::guard::Verdict;
+        let state = match reg.check(
+            guard_token(&headers, raw_query).as_deref(),
+            conv.as_deref(),
+            now_unix(),
+        ) {
+            Verdict::Valid(dev) => {
+                ctx.guard = true;
+                ctx.stats.guard = Some(dev);
+                "valid"
+            }
+            Verdict::Invalid(e) => {
+                tracing::warn!(request_id = %rid, reason = ?e, "Agent Guard token refused; treated as no guard");
+                "invalid"
+            }
+            Verdict::Absent => "absent",
+        };
+        st.metrics
+            .inc("aegis_guard_requests_total", &[("state", state)], 1);
+    }
     let mut up_cfg = up_cfg;
     let mut route_name = route_name;
     let mut route_model: Option<String> = None;

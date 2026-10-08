@@ -8,6 +8,7 @@ With TOOLMODE=1 the answer to a request that offers tools depends on the first u
 * default: a text block and two Bash tool_use blocks, one that prints the host pseudonym it saw and
   one that sends the secret marker it saw to an external address (that one must never reach the
   client); the next turn is a final text.
+* the message contains PII: one Bash call that echoes the e-mail pseudonym it saw (the check of AGG-03).
 * the message contains GUARD: the agent reads MOCK_DIR/home/.ssh/id_x and MOCK_DIR/work/ok.txt (for the
   checks of aegis-guard, which runs before the client executes a tool); then a final text.
 * the message contains FILES: the agent reads MOCK_DIR/config.env, then edits that file (the old
@@ -23,6 +24,7 @@ PORT = int(sys.argv[1])
 LOG = sys.argv[2]
 HOST_RE = r"h-[a-z2-7]{8}\.[a-z]+\.[a-z]+\.z-[a-z2-7]{8}\.aegis\.invalid"
 SECRET_RE = r"\[\[SECRET_[a-z2-7]{8}[^\]]*\]\]"
+EMAIL_RE = r"\[\[EMAIL_[a-z2-7]{8}[^\]]*\]\]"
 
 
 def sse(name, data):
@@ -57,6 +59,11 @@ def plan(req):
     host = (re.findall(HOST_RE, allmsg) or ["?"])[0]
     sec = (re.findall(SECRET_RE, allmsg) or ["?"])[0]
     results = last_tool_results(req)
+    if "PII" in first_user_text(req):
+        if results is None:
+            mail = (re.findall(EMAIL_RE, allmsg) or ["?"])[0]
+            return "Пишу письмо", [("toolu_01M", "Bash", {"command": f"echo MAIL {mail}", "description": "show address"})]
+        return None
     if "GUARD" in first_user_text(req):
         d = os.environ.get("MOCK_DIR", ".")
         if results is None:

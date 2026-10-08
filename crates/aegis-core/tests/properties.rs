@@ -218,6 +218,7 @@ proptest! {
             trifecta_cfg: &tri,
             trifecta: TrifectaState::default(),
             precleared: false,
+            guard: false,
         };
         let restored = restore(&masked[0], &m, &RestorePolicy::default(), &ctx).text;
         let again = mask(f, &[text.clone(), restored]).0;
@@ -248,6 +249,7 @@ proptest! {
                 trifecta_cfg: &tri,
                 trifecta: TrifectaState::default(),
                 precleared: false,
+            guard: false,
             };
             let out = restore(&foreign, &m, &RestorePolicy::default(), &ctx);
             prop_assert_eq!(&out.text, &foreign, "sink {:?}", sink);
@@ -277,6 +279,7 @@ proptest! {
             trifecta_cfg: &tri,
             trifecta: TrifectaState::default(),
             precleared: false,
+            guard: false,
         };
         let out = restore(&body, &m, &RestorePolicy::default(), &ctx);
         if out.allowed() {
@@ -327,6 +330,7 @@ proptest! {
                 trifecta_cfg: &tri,
                 trifecta: TrifectaState::default(),
                 precleared: false,
+            guard: false,
             };
             let _ = restore(&s, &m, &RestorePolicy::default(), &ctx);
             let _ = restore(&t, &m, &RestorePolicy::default(), &ctx);

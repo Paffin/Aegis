@@ -201,3 +201,87 @@ fn what_is_found_does_not_swallow_the_next_line() {
         }
     }
 }
+
+// ---- the same for the other kinds of values ----
+
+fn found_all(text: &str) -> Vec<(EntityType, String)> {
+    let pipe = Pipeline::new(
+        DetectConfig {
+            internal_zones: vec!["corp.local".into()],
+            ..Default::default()
+        },
+        Dictionary::default(),
+    );
+    pipe.scan(text)
+        .into_iter()
+        .map(|e| (e.ty, text[e.span.start..e.span.end].to_string()))
+        .collect()
+}
+
+/// Wrappers that do not depend on the kind of value: `{v}` is replaced by the value.
+fn generic_wrappers() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("plain", "connect to {v} now"),
+        ("cat -n", "     3\tHOST={v}\n"),
+        ("pipe numbers", "3|HOST={v}\n4|X=1"),
+        ("json-escaped", "A=1\\nHOST={v}\\nB=2"),
+        ("json object", "{\"content\":\"HOST={v}\\nB=2\"}"),
+        ("json in json", "{\"text\":\"{\\\"host\\\": \\\"{v}\\\"}\"}"),
+        ("grep -n", "config.env:3:HOST={v}"),
+        ("diff", "@@ -1 +1 @@\n+HOST={v}\n"),
+        ("table", "| host | {v} |"),
+        ("inline code", "run `ping {v}` first"),
+        ("xml", "<host>{v}</host>"),
+        ("xml attr", "<add key=\"Host\" value=\"{v}\"/>"),
+        ("html escaped", "HOST=&quot;{v}&quot;"),
+        ("yaml", "db:\n  host: {v}\n"),
+        ("url", "https://{v}/health"),
+        ("bom", "\u{feff}HOST={v}"),
+        ("crlf", "A=1\r\nHOST={v}\r\n"),
+        ("markdown link", "[dashboard](https://{v}/d)"),
+        ("log line", "2026-10-08 INFO upstream={v} status=502"),
+    ]
+}
+
+#[test]
+fn hosts_and_addresses_in_every_wrapper() {
+    let mut missed = vec![];
+    for (kind, value, ty) in [
+        ("host", "prod-db01.pay.corp.local", EntityType::Host),
+        ("ipv4", "10.20.30.41", EntityType::Ip),
+    ] {
+        for (name, tpl) in generic_wrappers() {
+            if name == "url" && kind == "ipv4" {
+                continue;
+            }
+            let text = tpl.replace("{v}", value);
+            let hits = found_all(&text);
+            if !hits.iter().any(|(t, v)| *t == ty && v.contains(value)) {
+                missed.push(format!("{kind} / {name}: {text:?} -> {hits:?}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{} not found:\n{}", missed.len(), missed.join("\n"));
+}
+
+#[test]
+fn keys_and_mail_in_every_wrapper() {
+    let mut missed = vec![];
+    for (kind, value, ty) in [
+        ("aws key", "AKIAJ3KQ7P2WXNB5ZT4A", EntityType::Secret),
+        ("github token", "ghp_16C7e42F292c6912E7710c838347Ae178B4a", EntityType::Secret),
+        ("email", "ivan.petrov@company.ru", EntityType::Email),
+    ] {
+        for (name, tpl) in generic_wrappers() {
+            if name == "url" || name == "markdown link" {
+                continue;
+            }
+            let text = tpl.replace("{v}", value);
+            let hits = found_all(&text);
+            if !hits.iter().any(|(t, v)| *t == ty && v.contains(value)) {
+                missed.push(format!("{kind} / {name}: {text:?} -> {hits:?}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{} not found:\n{}", missed.len(), missed.join("\n"));
+}

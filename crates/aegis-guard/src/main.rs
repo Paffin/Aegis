@@ -6,7 +6,7 @@ use aegis_guard::hook::{run, Format};
 use std::io::Read;
 
 fn usage() -> ! {
-    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь]\naegis-guard check [--config файл]\naegis-guard enroll [--id имя] [--key-file файл]   ключ этого устройства; печатает строку для guard.devices\naegis-guard token [--key-file файл] [--conversation id]\naegis-guard credential (--vk-file файл | --vk-env ИМЯ) [--key-file файл]   `ключ~токен` для apiKeyHelper");
+    eprintln!("aegis-guard hook [--config файл] [--format claude-code|generic]\naegis-guard settings [--config файл] [--aegis-guard путь] [--gateway URL] [--vk-file файл] [--sandbox] [--allow-host узел]... [--lock]   настройки Claude Code\naegis-guard install [те же флаги] [--managed-path файл]   записать их в управляемый файл настроек машины (нужен root)\naegis-guard doctor [--config файл] [--aegis-guard путь] [--managed-path файл] [--strict]   держится ли установка\naegis-guard check [--config файл]\naegis-guard enroll [--id имя] [--key-file файл]   ключ этого устройства; печатает строку для guard.devices\naegis-guard token [--key-file файл] [--conversation id]\naegis-guard credential (--vk-file файл | --vk-env ИМЯ) [--key-file файл]   `ключ~токен` для apiKeyHelper");
     std::process::exit(2)
 }
 
@@ -138,10 +138,73 @@ fn main() {
                 std::process::exit(1)
             }
         },
-        "settings" => {
+        "settings" | "install" => {
             let bin = binary.unwrap_or_else(|| "aegis-guard".into());
-            let cfg = config.map(|c| format!(" --config {c}")).unwrap_or_default();
-            print!("{}", aegis_guard::hook::claude_settings(&bin, &cfg));
+            let mut allow_hosts = vec![];
+            while let Some(h) = take(&mut args, "--allow-host") {
+                allow_hosts.push(h);
+            }
+            let flag = |args: &mut Vec<String>, f: &str| match args.iter().position(|a| a == f) {
+                Some(i) => {
+                    args.remove(i);
+                    true
+                }
+                None => false,
+            };
+            let sandbox = flag(&mut args, "--sandbox");
+            let lock = flag(&mut args, "--lock");
+            let managed_path = take(&mut args, "--managed-path")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(aegis_guard::managed::managed_path);
+            let opts = aegis_guard::managed::Options {
+                binary: bin,
+                // the hook runs as the user: a relative path would point somewhere else
+                config: config.as_ref().map(|c| {
+                    std::fs::canonicalize(c)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| c.clone())
+                }),
+                gateway: take(&mut args, "--gateway"),
+                vk_file: take(&mut args, "--vk-file"),
+                key_file: (key_file != aegis_guard::device::default_key_file())
+                    .then(|| key_file.to_string_lossy().into_owned()),
+                sandbox,
+                allow_hosts,
+                rule_hosts: load(config.clone()).map(|r| r.allow_hosts).unwrap_or_default(),
+                lock,
+            };
+            let text = match aegis_guard::managed::claude(&opts) {
+                Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default() + "\n",
+                Err(e) => fail(e),
+            };
+            if cmd == "install" {
+                if let Err(e) = aegis_guard::managed::install(&managed_path, &text) {
+                    fail(format!("{e} (запись в управляемый файл требует root)"));
+                }
+                println!("записано: {}", managed_path.display());
+                println!("проверьте: aegis-guard doctor --strict --aegis-guard {}", opts.binary);
+            } else {
+                print!("{text}");
+            }
+        }
+        "doctor" => {
+            let strict = args.iter().any(|a| a == "--strict");
+            let managed_path = take(&mut args, "--managed-path")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(aegis_guard::managed::managed_path);
+            let bin = binary.unwrap_or_else(|| "aegis-guard".into());
+            let bin_path = std::fs::canonicalize(&bin).unwrap_or_else(|_| bin.clone().into());
+            let cfg = config.as_ref().map(std::path::PathBuf::from);
+            let checks = aegis_guard::managed::doctor(&managed_path, &bin_path, cfg.as_deref(), strict);
+            let mut bad = 0;
+            for c in &checks {
+                println!("{} {}", if c.ok { "ok  " } else { "FAIL" }, c.what);
+                bad += usize::from(!c.ok);
+            }
+            if bad > 0 {
+                eprintln!("aegis-guard: {bad} из {} проверок не прошли", checks.len());
+                std::process::exit(1)
+            }
         }
         _ => usage(),
     }

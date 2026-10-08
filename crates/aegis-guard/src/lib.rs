@@ -11,3 +11,4 @@ pub mod config;
 pub mod decide;
 pub mod device;
 pub mod hook;
+pub mod managed;

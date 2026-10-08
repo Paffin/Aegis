@@ -30,7 +30,7 @@ base64 = "0.22"
 arc-swap = "1"
 proptest = { version = "1", default-features = false, features = ["std"] }
 getrandom = "0.2"
-rustix = { version = "0.38", features = ["process"] }
+rustix = { version = "1.1", features = ["process"] }
 clap = { version = "4", features = ["derive"] }
 aegis-core = { path = "crates/aegis-core" }
 

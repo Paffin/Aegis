@@ -11,7 +11,7 @@ rust-version = "1.80"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 regex = "1"
 aho-corasick = "1"

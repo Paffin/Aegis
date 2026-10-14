@@ -27,7 +27,7 @@ jobs:
           echo "version=$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
         env:
           INPUT_VERSION: ${{ inputs.version }}
-      - uses: peter-evans/create-pull-request@v7
+      - uses: peter-evans/create-pull-request@v8
         with:
           branch: release/v${{ steps.bump.outputs.version }}
           title: "release: v${{ steps.bump.outputs.version }}"

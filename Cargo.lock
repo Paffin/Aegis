@@ -27,7 +27,7 @@ dependencies = [
  "clap",
  "cryptoki",
  "ed25519-dalek",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -91,7 +91,7 @@ version = "0.2.1"
 dependencies = [
  "aegis-core",
  "ed25519-dalek",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "regex",
  "serde",
  "serde_json",
@@ -104,7 +104,7 @@ version = "0.2.1"
 dependencies = [
  "aegis-core",
  "cryptoki",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hmac",
  "sha2",
  "tracing",

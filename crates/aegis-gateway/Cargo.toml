@@ -35,7 +35,7 @@ rustix.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 cryptoki.workspace = true
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 tracing-subscriber.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
